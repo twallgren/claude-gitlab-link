@@ -303,3 +303,27 @@ test('a reopened MR is checked at the normal rate, not the merged one', async ($
   expect(w.wakes.length).toBe(2)
   expect(w.wakes[1]).toContain('merge conflict')
 })
+
+test('a wake row shows only its first line until expanded; other rows are untouched', async ($, on) => {
+  mock.store(on)
+  on('tool.register', (() => ({ value: {} })) as never)
+  on('command.register', ((_: unknown, e: { name: string }) => ({ value: { command: e.name } })) as never)
+  on('session.info', (() => ({ value: { transcriptPath: '/tmp/test-session.jsonl' } })) as never)
+  on('session.start', ((_: unknown, e: { cwd: string }) => ({ cwd: e.cwd })) as never)
+  const drawn: string[] = []
+  on('ui.render', { component: 'UserMessage' }, ((_: unknown, e: { props: { text: string } }) => {
+    drawn.push(e.props.text)
+    return { type: 'Text', props: {}, children: [e.props.text] }
+  }) as never)
+  await start($)
+  const wake = 'Automatic GitLab update, not typed by you: app!7: merged.\n\n<gitlab-mr-event>\n- app!7: merged\n</gitlab-mr-event>'
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const row = (text: string, isExpanded: boolean, name = 'gitlab-link') =>
+      $.ui.render({ surface, component: 'UserMessage', props: { text, origin: { kind: 'plugin', name }, isExpanded } } as never)
+    drawn.length = 0
+    await row(wake, false)
+    await row(wake, true)
+    await row(wake, false, 'other-mod')
+    expect(drawn).toEqual(['Automatic GitLab update, not typed by you: app!7: merged.', wake, wake])
+  }
+})

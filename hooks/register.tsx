@@ -169,6 +169,17 @@ export const register: Register = (on, options) => {
     return next({ ...e, context: [...(e.context ?? []), quietText(lines)] })
   })
 
+  // A wake is a plugin prompt the chat shows as a message row: in the compact view,
+  // draw only its first line (the plain sentence for the person); ctrl+o shows all.
+  on('ui.render', { component: 'UserMessage' }, async (_$, e, next) => {
+    const o = e.props.origin
+    const isOurs = o.kind === 'plugin' && o.name === 'gitlab-link'
+    if (!isOurs || e.props.isExpanded) return next(e)
+    const first = e.props.text.split('\n')[0] ?? ''
+    if (!first.startsWith('Automatic GitLab update')) return next(e)
+    return next({ ...e, props: { ...e.props, text: first } })
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const all = Object.values(await read($, links))
     const hs = Object.entries(await read($, health))
