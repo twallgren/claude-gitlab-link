@@ -97,7 +97,7 @@ An MR can be named by its URL, as `group/project!123`, or as `!123` for the sess
 | `pipeline` | The head pipeline of the current commit reaches a final status. `status: failed` limits it to failures. |
 | `job` | Job `job_id` finishes. |
 | `comment` | Someone other than glab's user comments. `from` limits it to one person. |
-| `approved` | The MR is approved. |
+| `approved` | The MR is approved by at least one person (and by enough people where approvals are required). |
 | `merged` | The MR is merged. |
 | `conflict` | A merge conflict appears. |
 | `deployed` | A deploy containing the MR's merge (or squash) commit finishes, with success, failure or cancellation. It waits for the merge first. |

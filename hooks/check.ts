@@ -200,8 +200,11 @@ async function evalArm($: EngineInterface, link: Link, arm: Arm, cur: Snapshot, 
         `projects/${p}/merge_requests/${link.iid}/approvals`,
       )
       if (!ap.ok) return ap
-      if (!ap.data.approved) return { ok: true, line: null }
-      return { ok: true, line: `approved by ${ap.data.approved_by.map(a => a.user.username).join(', ') || 'rule'}` }
+      // With no approvals required (gitlab.com free), GitLab reports approved with nobody in
+      // approved_by; the wait is for a person's approval, so it needs a name either way.
+      const by = ap.data.approved_by.map(a => a.user.username)
+      if (!ap.data.approved || by.length === 0) return { ok: true, line: null }
+      return { ok: true, line: `approved by ${by.join(', ')}` }
     }
     case 'merged':
       return { ok: true, line: cur.state === 'merged' ? 'merged' : null }

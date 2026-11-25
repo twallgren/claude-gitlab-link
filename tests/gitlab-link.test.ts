@@ -15,6 +15,7 @@ type Fake = {
   missing?: boolean
   bareError?: boolean
   noLogin?: boolean
+  approvals?: { approved: boolean; approved_by: { user: { username: string } }[] }
   calls: string[]
 }
 
@@ -51,6 +52,7 @@ function world(on: On, g: Fake, store?: Record<string, unknown>) {
     if (g.down) return bad(g.down)
     if (path === 'user') return ok({ username: 'claude-bot' })
     if (path.endsWith('/merge_requests/7')) return ok(g.mr)
+    if (path.endsWith('/merge_requests/7/approvals')) return ok(g.approvals ?? { approved: false, approved_by: [] })
     if (path.includes('/merge_requests/7/notes')) return ok([...g.notes].reverse())
     if (path.includes('/jobs?scope[]=failed')) return ok(g.failedJobs)
     if (path.includes('/repository/merge_base')) {
@@ -326,4 +328,21 @@ test('a wake row shows only its first line until expanded; other rows are untouc
     await row(wake, false, 'other-mod')
     expect(drawn).toEqual(['Automatic GitLab update, not typed by you: app!7: merged.', wake, wake])
   }
+})
+
+test('approved waits for a person when no approvals are required', async ($, on) => {
+  const g = fakeGitlab()
+  g.approvals = { approved: true, approved_by: [] }
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const w = world(on, g)
+  await start($)
+  const armed = await call($, 'gitlab_wait_for', { mr: URL, condition: 'approved' })
+  expect(String(armed.result)).not.toContain('met now')
+  await clock.advance(61_000)
+  expect(w.wakes.length).toBe(0)
+
+  g.approvals = { approved: true, approved_by: [{ user: { username: 'reviewer' } }] }
+  await clock.advance(61_000)
+  expect(w.wakes.length).toBe(1)
+  expect(w.wakes[0]).toContain('approved by reviewer')
 })
