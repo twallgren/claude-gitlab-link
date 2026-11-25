@@ -1,3 +1,5 @@
+<img src=".claude-plugin/icon.png" alt="" width="96" align="right">
+
 # gitlab-link
 
 A Claude Code mod that links GitLab merge requests to a session, on gitlab.com or any self-hosted GitLab, and wakes the session only when something it is waiting for happens. The session never has to poll.
@@ -54,10 +56,11 @@ In the desktop app, where `/plugin` does not run: click **+** next to the prompt
 ### Update and uninstall
 
 ```bash
+claude plugin marketplace update claude-gitlab-link
 claude plugin update gitlab-link@claude-gitlab-link
 ```
 
-Restart the session to load the update. To remove the mod:
+The first line fetches the latest version from GitHub; the second installs it. Restart the session to load the update. To remove the mod:
 
 ```bash
 claude plugin uninstall gitlab-link@claude-gitlab-link
