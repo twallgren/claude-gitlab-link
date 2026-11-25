@@ -5,6 +5,7 @@ import type { Register } from 'claude-code'
 
 import type { ArmKind, Problem } from '../types'
 import { linkStatus, outageLine, quietText } from './format'
+import { restore, save } from './persist'
 import { deliver, linkAndCheck, listText, makeRuntime, PROBLEMS, tick, unarm, unlink } from './runtime'
 
 const P = 'gitlab-link'
@@ -90,6 +91,8 @@ export const register: Register = (on, options) => {
       description: 'Unlink a GitLab MR from this session',
       argumentHint: '<MR url | group/project!123 | !123>',
     })
+    rt.sessionKey = (await $.session.info()).transcriptPath
+    await restore($, rt.sessionKey)
     $.clock.every(TICK_MS, () => tick($, rt))
     return next(e)
   })
@@ -162,6 +165,7 @@ export const register: Register = (on, options) => {
     const lines = await read($, quiet)
     if (lines.length === 0) return next(e)
     await update($, quiet, () => [])
+    await save($, rt.sessionKey)
     return next({ ...e, context: [...(e.context ?? []), quietText(lines)] })
   })
 

@@ -38,7 +38,8 @@ const bad = (stderr: string) => ({
 })
 
 /** The engine beneath the mod: glab answered from `g`, wakes recorded. */
-function world(on: On, g: Fake) {
+function world(on: On, g: Fake, store?: Record<string, unknown>) {
+  mock.store(on, store)
   const wakes: string[] = []
   const contexts: string[][] = []
   on('process.run', ((_: unknown, e: { argv: string[] }) => {
@@ -62,6 +63,7 @@ function world(on: On, g: Fake) {
     return bad(`404 Not Found ${path}`)
   }) as never)
   on('tool.register', (() => ({ value: {} })) as never)
+  on('session.info', (() => ({ value: { transcriptPath: '/tmp/test-session.jsonl' } })) as never)
   on('command.register', ((_: unknown, e: { name: string }) => ({ value: { command: e.name } })) as never)
   on('ui.notify', (() => ({ value: { isSent: true, channel: 'test' } })) as never)
   on('session.start', ((_: unknown, e: { cwd: string }) => ({ cwd: e.cwd })) as never)
@@ -177,7 +179,7 @@ test('deployed waits for the merge, then for a target job in a pipeline containi
   expect(w.wakes[0]).toContain('no restart')
 
   const list = await call($, 'gitlab_linked_mrs', {})
-  expect(String(list.result)).toBe('No MRs are linked to this session.')
+  expect(String(list.result)).toContain('No MRs are linked to this session.')
 })
 
 const denied = (r: any) => String(r.deny ?? r.text ?? '')
@@ -192,7 +194,7 @@ test('glab missing: the link is refused with install steps and nothing stays lin
   expect(denied(r)).toContain('brew install glab')
   expect(denied(r)).toContain('glabPath')
   g.missing = false
-  expect(String((await call($, 'gitlab_linked_mrs', {})).result)).toBe('No MRs are linked to this session.')
+  expect(String((await call($, 'gitlab_linked_mrs', {})).result)).toContain('No MRs are linked to this session.')
 })
 
 test('not logged in (401, a bare ERROR, or a private 404): the arm is refused with the login command', async ($, on) => {
@@ -208,7 +210,7 @@ test('not logged in (401, a bare ERROR, or a private 404): the arm is refused wi
     expect(denied(r)).toContain('nothing was armed')
   }
   g.down = null; g.bareError = false; g.noLogin = false
-  expect(String((await call($, 'gitlab_linked_mrs', {})).result)).toBe('No MRs are linked to this session.')
+  expect(String((await call($, 'gitlab_linked_mrs', {})).result)).toContain('No MRs are linked to this session.')
 })
 
 test('a login that fails after linking pauses checks, never wakes, and tells the next turn how to fix it', async ($, on) => {
@@ -225,4 +227,33 @@ test('a login that fails after linking pauses checks, never wakes, and tells the
   expect(ctx).toContain('checks are paused')
   expect(ctx).toContain('glab auth login --hostname gl.example.com:8443')
   expect(String((await call($, 'gitlab_linked_mrs', {})).result)).toContain('checks paused')
+})
+
+test('links saved to the store come back when a fresh plugin worker starts with empty state', async ($, on) => {
+  const g = fakeGitlab()
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const w = world(on, g, {
+    's1:/tmp/test-session.jsonl': {
+      savedAt: 900_000,
+      links: {
+        'gl.example.com:8443/grp/app!7': {
+          key: 'gl.example.com:8443/grp/app!7', host: 'gl.example.com:8443', project: 'grp/app', iid: 7,
+          problems: ['pipeline', 'conflict', 'closed'],
+          arms: [{ id: 'a1', kind: 'pipeline', armedAt: '2026-11-25T00:00:00.000Z' }],
+          snap: null, fired: {}, noteSince: null, nextCheckAt: 0, linkedAt: '2026-11-25T00:00:00.000Z',
+        },
+      },
+      health: {}, pendingWake: [], quiet: [],
+    },
+  })
+  await start($)
+  const listed = String((await call($, 'gitlab_linked_mrs', {})).result)
+  expect(listed).toContain('app!7')
+  expect(listed).toContain('waiting: pipeline')
+  expect(listed).toContain('loaded 1×')
+
+  g.mr = { ...g.mr, head_pipeline: { id: 11, sha: 'c2', status: 'success', web_url: 'https://gl/p/11' } }
+  await clock.advance(16_000)
+  expect(w.wakes.length).toBe(1)
+  expect(w.wakes[0]).toContain('pipeline #11 success')
 })

@@ -8,6 +8,7 @@ import { parseTargets } from './deploy'
 import { linkDetail, outageLine, wakeText } from './format'
 import { needsPerson, selfName, setupHelp, type FailKind } from './glab'
 import { linkKey, parseMr, shortName } from './mr-ref'
+import { diagLine, noteDiag, save } from './persist'
 
 // The session's values (declared again, identically, in each file that reads them).
 const links = atom({ plugin: 'gitlab-link', key: 'links' } as const, {}, { shape: 'links-1' })
@@ -32,6 +33,8 @@ export type Runtime = {
   isSubmitting: boolean
   isTicking: boolean
   armCount: number
+  /** The session's transcript path: the key its links are saved under. */
+  sessionKey: string
 }
 
 export function makeRuntime(options: PluginOptions): Runtime {
@@ -53,6 +56,7 @@ export function makeRuntime(options: PluginOptions): Runtime {
     isSubmitting: false,
     isTicking: false,
     armCount: 0,
+    sessionKey: '',
   }
 }
 
@@ -129,7 +133,19 @@ export async function tick($: EngineInterface, rt: Runtime) {
   if (rt.isTicking) return
   rt.isTicking = true
   try {
+    await tickOnce($, rt)
+  } catch (err) {
+    const at = await $.clock.now()
+    await noteDiag($, rt.sessionKey, d => ({ ...d, lastError: String(err).slice(0, 300), lastErrorAt: at }))
+  } finally {
+    rt.isTicking = false
+  }
+}
+
+async function tickOnce($: EngineInterface, rt: Runtime) {
+  {
     const now = await $.clock.now()
+    await noteDiag($, rt.sessionKey, d => ({ ...d, ticks: d.ticks + 1, lastTickAt: now }))
     const hs = await read($, health)
     const due = Object.values(await read($, links)).filter(
       l => l.nextCheckAt <= now && (hs[l.host]?.nextTryAt ?? 0) <= now,
@@ -152,9 +168,8 @@ export async function tick($: EngineInterface, rt: Runtime) {
         await hostFailed($, rt, link.host, out.kind, out.detail, now)
       }
     }
+    await save($, rt.sessionKey)
     await deliver($, rt)
-  } finally {
-    rt.isTicking = false
   }
 }
 
@@ -166,6 +181,7 @@ export async function deliver($: EngineInterface, rt: Runtime) {
   rt.isSubmitting = true
   try {
     await update($, pendingWake, () => [])
+    await save($, rt.sessionKey)
     await $.prompt.submit({ text: wakeText(lines, Object.values(await read($, links))) })
   } finally {
     rt.isSubmitting = false
@@ -175,7 +191,7 @@ export async function deliver($: EngineInterface, rt: Runtime) {
 export type ArmSpec = Omit<Arm, 'id' | 'armedAt'>
 
 /** Link (or re-read) an MR, optionally arm a condition, and check it now. What it finds goes in the answer, not a wake. */
-export async function linkAndCheck(
+async function linkAndCheckInner(
   $: EngineInterface,
   rt: Runtime,
   mrText: string,
@@ -233,7 +249,7 @@ export async function linkAndCheck(
   }
 }
 
-export async function unlink($: EngineInterface, rt: Runtime, mrText: string): Promise<string> {
+async function unlinkInner($: EngineInterface, rt: Runtime, mrText: string): Promise<string> {
   const ref = await parseMr($, mrText, rt.glabPath)
   if ('error' in ref) return ref.error
   const key = linkKey(ref)
@@ -242,7 +258,7 @@ export async function unlink($: EngineInterface, rt: Runtime, mrText: string): P
   return had ? `${shortName(ref)} unlinked.` : `${shortName(ref)} was not linked.`
 }
 
-export async function unarm($: EngineInterface, rt: Runtime, mrText: string, armId?: string, condition?: string): Promise<string> {
+async function unarmInner($: EngineInterface, rt: Runtime, mrText: string, armId?: string, condition?: string): Promise<string> {
   const ref = await parseMr($, mrText, rt.glabPath)
   if ('error' in ref) return ref.error
   const key = linkKey(ref)
@@ -268,5 +284,27 @@ export async function listText($: EngineInterface, rt: Runtime): Promise<string>
   const lines = all.map(linkDetail)
   for (const [host, h] of Object.entries(hs)) lines.push(outageLine(host, h, now))
   if (rt.targetsError) lines.push(`Settings problem: ${rt.targetsError}`)
-  return lines.length ? lines.join('\n') : 'No MRs are linked to this session.'
+  const diag = await diagLine($, rt.sessionKey)
+  return [lines.length ? lines.join('\n') : 'No MRs are linked to this session.', diag].join('\n')
+}
+
+/** The actions behind the tools: each saves the session's values when done. */
+export async function linkAndCheck(
+  $: EngineInterface, rt: Runtime, mrText: string, problems: Problem[] | undefined, arm?: ArmSpec,
+): Promise<{ error: string } | { text: string }> {
+  const r = await linkAndCheckInner($, rt, mrText, problems, arm)
+  await save($, rt.sessionKey)
+  return r
+}
+
+export async function unlink($: EngineInterface, rt: Runtime, mrText: string): Promise<string> {
+  const r = await unlinkInner($, rt, mrText)
+  await save($, rt.sessionKey)
+  return r
+}
+
+export async function unarm($: EngineInterface, rt: Runtime, mrText: string, armId?: string, condition?: string): Promise<string> {
+  const r = await unarmInner($, rt, mrText, armId, condition)
+  await save($, rt.sessionKey)
+  return r
 }

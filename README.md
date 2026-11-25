@@ -150,7 +150,7 @@ If glab is missing or not logged in, linking and arming are refused with the ste
 
 - **glab not found.** The desktop app often starts without your shell's `PATH`. Install glab (`brew install glab` on macOS), or set `glabPath` to its full path (`which glab`).
 - **Not logged in, or login rejected.** Run `glab auth login --hostname <host>`, then `glab auth status`. For a host with a port, keep the port: `glab auth login --hostname gitlab.example.com:8443`.
-- **A link never updates.** Ask for `gitlab_linked_mrs` or run `/gitlab-link`: an outage is listed with its cause, and the band above the prompt shows it too.
+- **A link never updates.** Ask for `gitlab_linked_mrs` or run `/gitlab-link`. Its last line shows how many times the mod has loaded in this session, when it last ran a check, and its last error. An outage is listed with its cause, and the band above the prompt shows it too.
 - **The MR can't be found.** glab's user needs access to the project. An MR that returns 404 is unlinked.
 
 ## Privacy and cost
@@ -158,6 +158,7 @@ If glab is missing or not logged in, linking and arming are refused with the ste
 - The mod talks only to your GitLab hosts, through glab, with glab's own login. It holds no token and sends nothing anywhere else.
 - Checking costs no model tokens. Each wake is one model turn, billed like any other.
 - Comment text from an MR goes into the session's context when a comment wait fires, or quietly on the next turn.
+- Each session's links and armed conditions are saved in Claude Code's local plugin store, so they survive a restart of the plugin or the session, and are pruned 14 days after a session last saved them.
 
 ## Compatibility
 
