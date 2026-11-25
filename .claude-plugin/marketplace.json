@@ -1,0 +1,13 @@
+{
+  "name": "claude-gitlab-link",
+  "owner": {
+    "name": "Taylor Wallgren"
+  },
+  "plugins": [
+    {
+      "name": "gitlab-link",
+      "source": "./"
+    }
+  ],
+  "description": "gitlab-link: link GitLab merge requests to a Claude Code session and wake it only on the events it waits for."
+}

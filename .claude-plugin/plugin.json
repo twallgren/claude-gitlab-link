@@ -1,0 +1,55 @@
+{
+  "name": "gitlab-link",
+  "version": "0.1.0",
+  "description": "Link GitLab merge requests (gitlab.com or self-hosted) to a session and wake it only on the events it waits for.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "intervalSeconds": {
+      "type": "number",
+      "title": "Check interval (open MRs)",
+      "description": "Seconds between checks of a linked open MR.",
+      "default": 60
+    },
+    "mergedIntervalSeconds": {
+      "type": "number",
+      "title": "Check interval (merged or closed MRs)",
+      "description": "Seconds between checks of a merged or closed MR that still has an armed condition.",
+      "default": 300
+    },
+    "maxBackoffSeconds": {
+      "type": "number",
+      "title": "Longest retry interval",
+      "description": "While GitLab is unreachable, retries back off from 1 minute up to this many seconds.",
+      "default": 600
+    },
+    "outageWakeMinutes": {
+      "type": "number",
+      "title": "Outage wake after (minutes)",
+      "description": "Wake the session once per outage after GitLab has been unreachable this long, only while a condition is armed.",
+      "default": 60
+    },
+    "defaultProblems": {
+      "type": "string",
+      "title": "Default problem wakes",
+      "description": "Comma-separated problems that wake the session for every linked MR: pipeline, conflict, closed. Empty for none.",
+      "default": "pipeline,conflict,closed"
+    },
+    "deployTargets": {
+      "type": "string",
+      "title": "Deploy targets (JSON)",
+      "description": "Per-project deploy targets for the deployed condition: {\"group/project\": {\"name\": {\"jobs\": [\"deploy:job\"], \"branch\": \"main\", \"notes\": {\"deploy:job\": \"text\"}}}}. A target not listed is read as a GitLab environment name.",
+      "default": "{}"
+    },
+    "glabPath": {
+      "type": "string",
+      "title": "glab executable",
+      "description": "Path to glab. Left as glab, the usual install folders are tried too.",
+      "default": "glab"
+    }
+  },
+  "author": {
+    "name": "Taylor Wallgren"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/twallgren/claude-gitlab-link"
+}
