@@ -89,7 +89,7 @@ export async function checkLink(
         `projects/${enc(project)}/pipelines/${cur.pipelineId}/jobs?scope[]=failed&per_page=100`,
       )
       const names = jobs.ok ? jobs.data.map(j => j.name).join(', ') : 'unknown'
-      wake.push(`pipeline #${cur.pipelineId} failed (failed jobs: ${names}) ${cur.pipelineUrl}`)
+      wake.push(`pipeline #${cur.pipelineId} failed${names ? ` (failed jobs: ${names})` : ''} ${cur.pipelineUrl}`)
     }
   }
   if (cur.state === 'opened' && cur.hasConflicts && !fired.conflict) {
@@ -185,7 +185,7 @@ async function evalArm($: EngineInterface, link: Link, arm: Arm, cur: Snapshot, 
       let failed = ''
       if (cur.pipelineStatus === 'failed') {
         const jobs = await get<{ name: string }[]>(`projects/${p}/pipelines/${cur.pipelineId}/jobs?scope[]=failed&per_page=100`)
-        if (jobs.ok) failed = ` (failed jobs: ${jobs.data.map(j => j.name).join(', ')})`
+        if (jobs.ok && jobs.data.length) failed = ` (failed jobs: ${jobs.data.map(j => j.name).join(', ')})`
       }
       return { ok: true, line: `pipeline #${cur.pipelineId} ${cur.pipelineStatus}${failed} ${cur.pipelineUrl}` }
     }
@@ -222,7 +222,10 @@ async function evalArm($: EngineInterface, link: Link, arm: Arm, cur: Snapshot, 
       const d = hit.data
       return {
         ok: true,
-        line: `deployed ${arm.target}: ${d.job} ${d.status} at ${d.sha.slice(0, 8)}${d.note ? ` (${d.note})` : ''} ${d.url}`,
+        line: [
+          `deployed ${arm.target}:`, d.job === arm.target ? '' : d.job, d.status, `at ${d.sha.slice(0, 8)}`,
+          d.note ? `(${d.note})` : '', d.url,
+        ].filter(Boolean).join(' '),
       }
     }
     default:

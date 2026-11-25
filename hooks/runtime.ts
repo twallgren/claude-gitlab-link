@@ -62,8 +62,9 @@ export function makeRuntime(options: PluginOptions): Runtime {
 
 const iso = (ms: number) => new Date(ms).toISOString()
 
+// A merged MR is checked less often, unless a deploy wait is armed: that one is time-sensitive.
 const nextDue = (rt: Runtime, link: Link, now: number) =>
-  now + (link.snap?.state === 'merged' ? rt.mergedMs : rt.intervalMs)
+  now + (link.snap?.state === 'merged' && !link.arms.some(a => a.kind === 'deployed') ? rt.mergedMs : rt.intervalMs)
 
 const without = <T>(all: Record<string, T>, key: string) => {
   const copy = { ...all }

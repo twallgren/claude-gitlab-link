@@ -16,6 +16,7 @@ type Fake = {
   bareError?: boolean
   noLogin?: boolean
   approvals?: { approved: boolean; approved_by: { user: { username: string } }[] }
+  deployments?: { sha: string; status: string }[]
   calls: string[]
 }
 
@@ -60,6 +61,7 @@ function world(on: On, g: Fake, store?: Record<string, unknown>) {
       return ok({ id: g.ancestors[`${a}:${b}`] ? a : 'zzz' })
     }
     if (path.includes('/pipelines?ref=')) return ok(g.pipelines)
+    if (path.includes('/deployments?environment=')) return ok(g.deployments ?? [])
     const jobs = path.match(/pipelines\/(\d+)\/jobs/)
     if (jobs) return ok(g.jobs[Number(jobs[1])] ?? [])
     return bad(`404 Not Found ${path}`)
@@ -345,4 +347,21 @@ test('approved waits for a person when no approvals are required', async ($, on)
   await clock.advance(61_000)
   expect(w.wakes.length).toBe(1)
   expect(w.wakes[0]).toContain('approved by reviewer')
+})
+
+test('an environment deploy with no job wakes at the normal rate with a tidy line', async ($, on) => {
+  const g = fakeGitlab()
+  const clock = mock.clock(on, { now: 9_000_000 })
+  const w = world(on, g)
+  await start($)
+  await call($, 'gitlab_wait_for', { mr: URL, condition: 'deployed', target: 'production' })
+  g.mr = { ...g.mr, state: 'merged', merge_commit_sha: 'mc1' }
+  await clock.advance(61_000)
+  expect(w.wakes.length).toBe(0)
+
+  g.deployments = [{ sha: 'mc1', status: 'success' }]
+  g.ancestors = { 'mc1:mc1': true }
+  await clock.advance(61_000)
+  expect(w.wakes.length).toBe(1)
+  expect(w.wakes[0]).toContain('deployed production: success at mc1\n')
 })

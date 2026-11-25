@@ -1,6 +1,6 @@
 {
   "name": "gitlab-link",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Link GitLab merge requests (gitlab.com or self-hosted) to a session and wake it only on the events it waits for.",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -12,8 +12,8 @@
     },
     "mergedIntervalSeconds": {
       "type": "number",
-      "title": "Check interval (merged or closed MRs)",
-      "description": "Seconds between checks of a merged or closed MR that still has an armed condition.",
+      "title": "Check interval (merged MRs)",
+      "description": "Seconds between checks of a merged MR that still has an armed condition other than deployed.",
       "default": 300
     },
     "maxBackoffSeconds": {

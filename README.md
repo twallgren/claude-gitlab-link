@@ -102,7 +102,9 @@ An MR can be named by its URL, as `group/project!123`, or as `!123` for the sess
 | `conflict` | A merge conflict appears. |
 | `deployed` | A deploy containing the MR's merge (or squash) commit finishes, with success, failure or cancellation. It waits for the merge first. |
 
-An MR stays linked after it is merged while a `comment`, `deployed`, `pipeline`, `job` or `merged` condition is armed on it, and it is checked less often then. A condition that can no longer fire, such as `approved` on a closed MR, is disarmed and reported in one wake.
+An MR stays linked after it is merged while a `comment`, `deployed`, `pipeline`, `job` or `merged` condition is armed on it, and it is checked less often then, except while `deployed` is armed.
+
+A problem already present when an MR is linked, such as a pipeline that has already failed, shows in the link's status but sends no wake. A condition that can no longer fire, such as `approved` on a closed MR, is disarmed and reported in one wake.
 
 ### Deploy targets
 
@@ -139,7 +141,7 @@ Set these in `/config`, or under `pluginConfigs["gitlab-link"].options` in `~/.c
 | Setting | Default | What it sets |
 | --- | --- | --- |
 | `intervalSeconds` | 60 | Seconds between checks of a linked open MR. |
-| `mergedIntervalSeconds` | 300 | Seconds between checks of a merged or closed MR that still has something armed. |
+| `mergedIntervalSeconds` | 300 | Seconds between checks of a merged MR that still has something armed, other than `deployed`. |
 | `maxBackoffSeconds` | 600 | The longest wait between retries while GitLab is unreachable. |
 | `outageWakeMinutes` | 60 | How long an outage lasts before the one wake (only while something is armed). |
 | `defaultProblems` | `pipeline,conflict,closed` | The default problem wakes; empty for none. |
