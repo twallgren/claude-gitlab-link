@@ -1,7 +1,7 @@
 // Parsing the ways a person or the model names an MR.
 import type { EngineInterface } from 'claude-code'
 
-import { api } from './glab'
+import { api, setupHelp } from './glab'
 
 export type MrRef = { host: string; project: string; iid: number }
 
@@ -32,29 +32,32 @@ export async function parseMr(
   const repo = await repoOfSession($, glabPath)
   if (full) {
     // The host: the session repository's, else the one host glab is logged in to.
-    const host = 'error' in repo ? await onlyGlabHost($, glabPath) : repo.host
-    if (!host) {
-      return { error: `Which GitLab host is ${full[1]} on? Give the MR URL (glab is logged in to several hosts, or none).` }
-    }
-    return { host, project: full[1]!, iid: Number(full[2]) }
+    if (!('error' in repo)) return { host: repo.host, project: full[1]!, iid: Number(full[2]) }
+    const only = await onlyGlabHost($, glabPath)
+    if ('error' in only) return { error: `Can't tell which GitLab host ${full[1]} is on: ${only.error}` }
+    return { host: only.host, project: full[1]!, iid: Number(full[2]) }
   }
   if ('error' in repo) return repo
   return { host: repo.host, project: repo.project, iid: Number(bare![1]) }
 }
 
 /** The host glab is logged in to, when it is logged in to exactly one. */
-async function onlyGlabHost($: EngineInterface, glabPath: string): Promise<string | null> {
+async function onlyGlabHost($: EngineInterface, glabPath: string): Promise<{ host: string } | { error: string }> {
   for (const bin of glabPath === 'glab' ? ['glab', '/opt/homebrew/bin/glab', '/usr/local/bin/glab'] : [glabPath]) {
+    let out
     try {
-      const r = await $.process.run([bin, 'auth', 'status'], { env: { NO_COLOR: '1' } })
-      const hosts = [...`${r.stdout}\n${r.stderr}`.matchAll(/Logged in to (\S+) as/g)].map(m => m[1]!)
-      const unique = [...new Set(hosts)]
-      return unique.length === 1 ? unique[0]! : null
+      out = await $.process.run([bin, 'auth', 'status'], { env: { NO_COLOR: '1' } })
     } catch {
       continue
     }
+    const hosts = [...new Set([...`${out.stdout}\n${out.stderr}`.matchAll(/Logged in to (\S+) as/g)].map(m => m[1]!))]
+    if (hosts.length === 1) return { host: hosts[0]! }
+    if (hosts.length === 0) {
+      return { error: 'glab is not logged in to any GitLab host. Give the MR URL, and have the person log in with `glab auth login --hostname <host>`.' }
+    }
+    return { error: `glab is logged in to several hosts (${hosts.join(', ')}). Give the MR URL instead.` }
   }
-  return null
+  return { error: setupHelp('missing', '<your GitLab host>') ?? 'glab is not installed.' }
 }
 
 /** The GitLab host and project of the session's own repository, from its origin remote. */

@@ -12,6 +12,9 @@ type Fake = {
   jobs: Record<number, { name: string; status: string; web_url: string }[]>
   ancestors: Record<string, boolean>
   down: string | null
+  missing?: boolean
+  bareError?: boolean
+  noLogin?: boolean
   calls: string[]
 }
 
@@ -41,6 +44,9 @@ function world(on: On, g: Fake) {
   on('process.run', ((_: unknown, e: { argv: string[] }) => {
     const path = e.argv[2] ?? ''
     g.calls.push(path)
+    if (g.missing) return { deny: 'spawn glab ENOENT' }
+    if (g.bareError) return { value: { exitCode: 0, stdout: '', stderr: '   ERROR  \n', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (g.noLogin) return path === 'user' ? bad('glab: 401 Unauthorized (HTTP 401)') : bad('glab: 404 Not Found (HTTP 404)')
     if (g.down) return bad(g.down)
     if (path === 'user') return ok({ username: 'claude-bot' })
     if (path.endsWith('/merge_requests/7')) return ok(g.mr)
@@ -172,4 +178,51 @@ test('deployed waits for the merge, then for a target job in a pipeline containi
 
   const list = await call($, 'gitlab_linked_mrs', {})
   expect(String(list.result)).toBe('No MRs are linked to this session.')
+})
+
+const denied = (r: any) => String(r.deny ?? r.text ?? '')
+
+test('glab missing: the link is refused with install steps and nothing stays linked', async ($, on) => {
+  const g = fakeGitlab()
+  mock.clock(on, { now: 1 })
+  world(on, g)
+  await start($)
+  g.missing = true
+  const r = await call($, 'gitlab_link_mr', { mr: URL })
+  expect(denied(r)).toContain('brew install glab')
+  expect(denied(r)).toContain('glabPath')
+  g.missing = false
+  expect(String((await call($, 'gitlab_linked_mrs', {})).result)).toBe('No MRs are linked to this session.')
+})
+
+test('not logged in (401, a bare ERROR, or a private 404): the arm is refused with the login command', async ($, on) => {
+  const g = fakeGitlab()
+  mock.clock(on, { now: 1 })
+  world(on, g)
+  await start($)
+  for (const set of [() => { g.down = 'glab: 401 Unauthorized (HTTP 401)' }, () => { g.bareError = true }, () => { g.noLogin = true }]) {
+    g.down = null; g.bareError = false; g.noLogin = false
+    set()
+    const r = await call($, 'gitlab_wait_for', { mr: URL, condition: 'approved' })
+    expect(denied(r)).toContain('glab auth login --hostname gl.example.com:8443')
+    expect(denied(r)).toContain('nothing was armed')
+  }
+  g.down = null; g.bareError = false; g.noLogin = false
+  expect(String((await call($, 'gitlab_linked_mrs', {})).result)).toBe('No MRs are linked to this session.')
+})
+
+test('a login that fails after linking pauses checks, never wakes, and tells the next turn how to fix it', async ($, on) => {
+  const g = fakeGitlab()
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const w = world(on, g)
+  await start($)
+  await call($, 'gitlab_wait_for', { mr: URL, condition: 'approved' })
+  g.down = 'glab: 401 Unauthorized (HTTP 401)'
+  await clock.advance(2 * 60 * 60_000)
+  expect(w.wakes.length).toBe(0)
+  await $.prompt.submit({ text: 'anything new?' })
+  const ctx = w.contexts.at(-1)?.join('\n') ?? ''
+  expect(ctx).toContain('checks are paused')
+  expect(ctx).toContain('glab auth login --hostname gl.example.com:8443')
+  expect(String((await call($, 'gitlab_linked_mrs', {})).result)).toContain('checks paused')
 })

@@ -1,6 +1,7 @@
 // The text the session and the person read.
 import type { HostHealth, Link } from '../types'
 import { describeArm } from './check'
+import { setupHint, type FailKind } from './glab'
 import { shortName } from './mr-ref'
 
 export function linkStatus(link: Link): string {
@@ -29,7 +30,9 @@ export function linkDetail(link: Link): string {
 
 export function outageLine(host: string, h: HostHealth, now: number): string {
   const mins = Math.round((now - h.since) / 60000)
-  return `GitLab ${host} unreachable for ${mins} min (${h.kind}: ${h.detail})`
+  const hint = setupHint(h.kind as FailKind, host)
+  const state = hint ? 'checks paused' : 'unreachable'
+  return `GitLab ${host} ${state} for ${mins} min (${h.kind}: ${h.detail})${hint ? ` — ${hint}` : ''}`
 }
 
 export function wakeText(lines: string[], links: Link[]): string {

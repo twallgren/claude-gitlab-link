@@ -26,6 +26,36 @@ export function classify(stderr: string): FailKind {
   return 'other'
 }
 
+/** Whether a failure is one only the person can fix (no retry will help). */
+export const needsPerson = (kind: FailKind) => kind === 'missing' || kind === 'auth'
+
+/** What to do about glab being missing or not logged in, for the model to pass on. */
+export function setupHelp(kind: FailKind, host: string): string | null {
+  if (kind === 'missing') {
+    return [
+      'glab, the GitLab CLI this mod makes every GitLab call through, is not installed or not on the PATH Claude Code sees.',
+      'Install it: on macOS `brew install glab`; other systems: https://gitlab.com/gitlab-org/cli#installation.',
+      `Then log in: \`glab auth login --hostname ${host}\` (the person runs this themselves: it uses their own token).`,
+      "If glab is installed but not found, set the mod's glabPath option to its full path (`which glab`).",
+    ].join(' ')
+  }
+  if (kind === 'auth') {
+    return [
+      `glab is not logged in to ${host}, or its login was rejected (an expired or revoked token).`,
+      `The person runs, in their own terminal: \`glab auth login --hostname ${host}\` (keep the port when the host has one),`,
+      'then checks it with `glab auth status`. Logging in uses their own token, so they do it themselves.',
+    ].join(' ')
+  }
+  return null
+}
+
+/** One short line for the band. */
+export function setupHint(kind: FailKind, host: string): string | null {
+  if (kind === 'missing') return 'install glab, or set glabPath'
+  if (kind === 'auth') return `run: glab auth login --hostname ${host}`
+  return null
+}
+
 /** Percent-encodes a project path for /projects/:id. */
 export const enc = (project: string) => encodeURIComponent(project)
 
@@ -60,6 +90,11 @@ export async function api<T>(
       try {
         return { ok: true, data: JSON.parse(run.stdout) as T }
       } catch {
+        // glab answers a host it has no login for with a bare ERROR and exit 0.
+        const said = `${run.stdout}\n${run.stderr}`
+        if (/\berror\b/i.test(said)) {
+          return { ok: false, kind: 'auth', detail: `glab has no login for ${host}` }
+        }
         return { ok: false, kind: 'other', detail: `unreadable reply from ${path}` }
       }
     }

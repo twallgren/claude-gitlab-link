@@ -143,8 +143,10 @@ Set these in `/config`, or under `pluginConfigs["gitlab-link"].options` in `~/.c
 
 ## Troubleshooting
 
-- **"glab could not be started", or a notification about it.** The desktop app often starts without your shell's `PATH`. Set `glabPath` to glab's full path (`which glab`).
-- **Login rejected.** Run `glab auth status`. For a host with a port, log in with the port included: `glab auth login --hostname gitlab.example.com:8443`.
+If glab is missing or not logged in, linking and arming are refused with the steps to fix it, and nothing is left linked. Claude passes those steps on, and can offer to install glab. Logging in is yours to do, because it uses your token. If a login fails later, for example because a token expired, checks pause without waking the session. The band shows the fix command, and Claude is told on its next turn.
+
+- **glab not found.** The desktop app often starts without your shell's `PATH`. Install glab (`brew install glab` on macOS), or set `glabPath` to its full path (`which glab`).
+- **Not logged in, or login rejected.** Run `glab auth login --hostname <host>`, then `glab auth status`. For a host with a port, keep the port: `glab auth login --hostname gitlab.example.com:8443`.
 - **A link never updates.** Ask for `gitlab_linked_mrs` or run `/gitlab-link`: an outage is listed with its cause, and the band above the prompt shows it too.
 - **The MR can't be found.** glab's user needs access to the project. An MR that returns 404 is unlinked.
 

@@ -6,6 +6,7 @@ import type { Arm, HostHealth, Link, Problem } from '../types'
 import { checkLink, describeArm, type CheckCfg, type CheckOutcome } from './check'
 import { parseTargets } from './deploy'
 import { linkDetail, outageLine, wakeText } from './format'
+import { needsPerson, selfName, setupHelp, type FailKind } from './glab'
 import { linkKey, parseMr, shortName } from './mr-ref'
 
 // The session's values (declared again, identically, in each file that reads them).
@@ -100,11 +101,14 @@ async function hostFailed($: EngineInterface, rt: Runtime, host: string, kind: s
     nextTryAt: mark > now && mark < backoff ? mark : backoff,
     hasWoken: old?.hasWoken ?? false, hasNotified: old?.hasNotified ?? false,
   }
-  const isPersonal = kind === 'auth' || kind === 'missing'
+  const isPersonal = needsPerson(kind as FailKind)
   if (isPersonal && !h.hasNotified) {
     h.hasNotified = true
     const what = kind === 'auth' ? `glab's login to ${host} was rejected` : 'glab could not be started'
-    void $.ui.notify(`${what}: ${detail.slice(0, 120)}. Checks resume once a call succeeds.`, { title: 'gitlab-link' })
+    void $.ui.notify(`${what}. Checks resume once a call succeeds.`, { title: 'gitlab-link' })
+    // The desktop app shows no notification from a mod: tell the model on its next turn too.
+    const help = setupHelp(kind as FailKind, host)
+    if (help) await update($, quiet, l => [...l, `GitLab ${host}: checks are paused. ${help}`])
   }
   if (!isPersonal && hasArmed && !h.hasWoken && now - h.since >= rt.outageMs) {
     h.hasWoken = true
@@ -200,9 +204,20 @@ export async function linkAndCheck(
   await update($, links, all => ({ ...all, [key]: withArm }))
   const out = await checkLink($, withArm, rt.cfg)
   if (!out.ok) {
+    // Put the link back as it was: nothing new stays linked or armed on a failure the person must fix.
+    const undo = () => update($, links, all => (existing ? { ...all, [key]: existing } : without(all, key)))
+    if (needsPerson(out.kind)) {
+      await undo()
+      return { error: `Could not reach ${ref.host} for ${shortName(ref)}; nothing was ${arm ? 'armed' : 'linked'}. ${setupHelp(out.kind, ref.host)}` }
+    }
     if (out.gone) {
-      await update($, links, all => without(all, key))
-      return { error: `${shortName(ref)} was not found on ${ref.host} (or glab has no access to it).` }
+      await undo()
+      // A private project answers 404, not 401, to a request with no login: check the login first.
+      const me = await selfName($, ref.host, rt.glabPath)
+      if (!me.ok && needsPerson(me.kind)) {
+        return { error: `Could not read ${shortName(ref)}; nothing was ${arm ? 'armed' : 'linked'}. ${setupHelp(me.kind, ref.host)}` }
+      }
+      return { error: `${shortName(ref)} was not found on ${ref.host}, or glab's user (${me.ok ? me.data : 'unknown'}) has no access to it.` }
     }
     return { text: `${shortName(ref)} linked, but GitLab could not be read (${out.kind}: ${out.detail}). It will be retried.\n${linkDetail(withArm)}` }
   }
