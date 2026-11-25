@@ -8,7 +8,7 @@ A Claude Code mod that links GitLab merge requests to a session, on gitlab.com o
 
 Claude Code's built-in pull-request integration is GitHub-only, and the GitLab plugin in Anthropic's directory is a set of tools the model calls when it wants data: nothing tells a session that a pipeline failed or a reviewer commented. Without that, a session waiting on an MR either polls GitLab, spending a model turn on every check, or never hears about the change.
 
-gitlab-link checks GitLab itself, inside Claude Code, without spending model tokens. When a condition the session armed is met, or a linked MR hits a blocking problem, the mod starts one turn in the session, with every event from that check batched together. Changes nobody asked about never wake the session: they are attached quietly to its next turn and shown in a band above the prompt.
+gitlab-link checks GitLab itself, inside Claude Code, without spending model tokens. When a condition the session armed is met, or a linked MR hits a blocking problem, the mod starts one turn in the session, with every event from that check batched together. Changes nobody asked about never wake the session: they are attached quietly to its next turn (or the next wake) and shown in a band above the prompt.
 
 ## Quick start
 
@@ -23,9 +23,11 @@ gitlab-link checks GitLab itself, inside Claude Code, without spending model tok
      armed a1x9k2: pipeline (since 2026-11-25T21:24:15.905Z)
    ```
 
-4. Carry on, or leave the session idle. When the pipeline finishes, the session wakes with a turn like this:
+4. Carry on, or leave the session idle. When the pipeline finishes, the session wakes with a turn like this. It shows in the conversation as a message from the plugin; the first line is for you, the rest for Claude:
 
    ```
+   Automatic GitLab update, not typed by you: app!42: pipeline #1234 failed (failed jobs: test:unit).
+
    <gitlab-mr-event>
    From the gitlab-link mod: a condition you armed fired, or a linked MR hit a blocking problem.
    - app!42: pipeline #1234 failed (failed jobs: test:unit) https://gitlab.example.com/group/app/-/pipelines/1234
@@ -162,7 +164,7 @@ If glab is missing or not logged in, linking and arming are refused with the ste
 
 ## Compatibility
 
-Tested against a self-hosted GitLab. gitlab.com and the environment-based deploy targets have not yet been tested against a live server. Reports are welcome.
+Tested live against a self-hosted GitLab and gitlab.com. The `deployed` condition is covered by tests but has not yet been seen firing against a live server. Reports are welcome.
 
 ## Developing
 

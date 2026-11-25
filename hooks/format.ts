@@ -1,6 +1,6 @@
 // The text the session and the person read.
 import type { HostHealth, Link } from '../types'
-import { describeArm } from './check'
+import { clip, describeArm } from './check'
 import { setupHint, type FailKind } from './glab'
 import { shortName } from './mr-ref'
 
@@ -35,15 +35,22 @@ export function outageLine(host: string, h: HostHealth, now: number): string {
   return `GitLab ${host} ${state} for ${mins} min (${h.kind}: ${h.detail})${hint ? ` — ${hint}` : ''}`
 }
 
-export function wakeText(lines: string[], links: Link[]): string {
+export function wakeText(lines: string[], links: Link[], also: string[] = []): string {
   const still = links
     .filter(l => l.arms.length > 0)
     .map(l => `${shortName(l)}: ${l.arms.map(describeArm).join(', ')}`)
+  const first = lines[0]!.replace(/\s+https?:\/\/\S+$/, '')
+  const more = lines.length > 1 ? ` (and ${lines.length - 1} more)` : ''
+  const shown = also.slice(-50)
   return [
+    `Automatic GitLab update, not typed by you: ${clip(first, 120)}${more}.`,
+    '',
     '<gitlab-mr-event>',
     'From the gitlab-link mod: a condition you armed fired, or a linked MR hit a blocking problem.',
     ...lines.map(l => `- ${l}`),
     still.length ? `Still armed: ${still.join('; ')}` : 'Nothing else is armed.',
+    ...(shown.length ? ['Other changes since your last turn that nothing was armed for:', ...shown.map(l => `- ${l}`)] : []),
+    ...(also.length > shown.length ? [`(${also.length - shown.length} earlier lines left out)`] : []),
     '</gitlab-mr-event>',
   ].join('\n')
 }

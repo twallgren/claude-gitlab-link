@@ -180,9 +180,12 @@ export async function deliver($: EngineInterface, rt: Runtime) {
   if (lines.length === 0) return
   rt.isSubmitting = true
   try {
+    // A plugin's own submit skips its prompt.submit hook, so quiet lines ride in the wake text.
+    const also = await read($, quiet)
     await update($, pendingWake, () => [])
+    await update($, quiet, () => [])
     await save($, rt.sessionKey)
-    await $.prompt.submit({ text: wakeText(lines, Object.values(await read($, links))) })
+    await $.prompt.submit({ text: wakeText(lines, Object.values(await read($, links)), also) })
   } finally {
     rt.isSubmitting = false
   }

@@ -32,7 +32,7 @@ const JOB_FINAL = new Set(['success', 'failed', 'canceled', 'skipped'])
 /** Conditions that can still fire on a merged MR. */
 const AFTER_MERGE = new Set(['comment', 'deployed', 'pipeline', 'job', 'merged'])
 
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s)
+export const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s)
 
 export function toSnapshot(mr: MrJson): Snapshot {
   return {
@@ -103,13 +103,6 @@ export async function checkLink(
     wake.push('closed without merging')
   }
 
-  // Quiet changes nobody armed for.
-  if (prev && (prev.pipelineId !== cur.pipelineId || prev.pipelineStatus !== cur.pipelineStatus) && cur.pipelineId) {
-    quiet.push(`pipeline #${cur.pipelineId}: ${cur.pipelineStatus}`)
-  }
-  if (prev && prev.state !== cur.state && !(cur.state === 'closed' && link.problems.includes('closed'))) {
-    quiet.push(`state: ${prev.state} → ${cur.state}`)
-  }
 
   // Comments: read only when the count moved or a comment wait is armed.
   let noteSince = link.noteSince
@@ -156,6 +149,16 @@ export async function checkLink(
   }
   if (cannot.length > 0) {
     wake.push(`MR is ${cur.state}; these waits can no longer fire and were disarmed: ${cannot.map(describeArm).join(', ')}`)
+  }
+
+  // Quiet changes nobody armed for, left out when this check's wake already says them.
+  const pipelineWoke = wake.some(w => w.startsWith(`pipeline #${cur.pipelineId} `))
+  if (prev && (prev.pipelineId !== cur.pipelineId || prev.pipelineStatus !== cur.pipelineStatus) && cur.pipelineId && !pipelineWoke) {
+    quiet.push(`pipeline #${cur.pipelineId}: ${cur.pipelineStatus}`)
+  }
+  const stateWoke = wake.some(w => w === 'merged' || w === 'closed without merging' || w.startsWith('MR is '))
+  if (prev && prev.state !== cur.state && !stateWoke) {
+    quiet.push(`state: ${prev.state} → ${cur.state}`)
   }
 
   const next: Link = { ...link, snap: cur, fired, noteSince, arms: keep }

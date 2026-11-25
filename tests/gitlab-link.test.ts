@@ -122,9 +122,29 @@ test('an armed comment wakes; own comments and unarmed changes stay quiet', asyn
   expect(w.wakes[0]).toContain('comment by reviewer: please rename')
   expect(w.wakes[0]).toContain('Nothing else is armed.')
 
+  // The quiet change before the wake rides in the wake itself, once.
+  expect(w.wakes[0]).toContain('Other changes since your last turn')
+  expect(w.wakes[0]).toContain('pipeline #11: success')
   await $.prompt.submit({ text: 'next thing' })
   const ctx = w.contexts.at(-1)?.join('\n') ?? ''
-  expect(ctx).toContain('pipeline #11: success')
+  expect(ctx).not.toContain('pipeline #11: success')
+})
+
+test('a wake opens with a plain sentence and is not repeated as a quiet change', async ($, on) => {
+  const g = fakeGitlab()
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const w = world(on, g)
+  await start($)
+  await call($, 'gitlab_wait_for', { mr: URL, condition: 'pipeline' })
+
+  g.mr = { ...g.mr, head_pipeline: { id: 11, sha: 'c2', status: 'success', web_url: 'https://gl/p/11' } }
+  await clock.advance(61_000)
+  expect(w.wakes.length).toBe(1)
+  expect(w.wakes[0]!.startsWith('Automatic GitLab update, not typed by you: app!7: pipeline #11 success.')).toBe(true)
+  expect(w.wakes[0]).not.toContain('Other changes since your last turn')
+
+  await $.prompt.submit({ text: 'next thing' })
+  expect(w.contexts.at(-1)?.join('\n') ?? '').not.toContain('pipeline #11')
 })
 
 test('an outage wakes once after an hour, only with something armed', async ($, on) => {
