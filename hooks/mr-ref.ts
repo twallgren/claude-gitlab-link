@@ -31,14 +31,30 @@ export async function parseMr(
   }
   const repo = await repoOfSession($, glabPath)
   if (full) {
-    // The host: the session repository's, else the one host glab is logged in to.
+    // The host: the session repository's, else GITLAB_HOST (glab's own default
+    // when set), else the one host glab is logged in to.
     if (!('error' in repo)) return { host: repo.host, project: full[1]!, iid: Number(full[2]) }
+    const fromEnv = await envHost($)
+    if (fromEnv) return { host: fromEnv, project: full[1]!, iid: Number(full[2]) }
     const only = await onlyGlabHost($, glabPath)
     if ('error' in only) return { error: `Can't tell which GitLab host ${full[1]} is on: ${only.error}` }
     return { host: only.host, project: full[1]!, iid: Number(full[2]) }
   }
   if ('error' in repo) return repo
   return { host: repo.host, project: repo.project, iid: Number(bare![1]) }
+}
+
+/** GITLAB_HOST as glab reads it: a host (with any port), or a URL whose host is taken. */
+async function envHost($: EngineInterface): Promise<string | null> {
+  let value: string | undefined
+  try {
+    value = await $.env.get('GITLAB_HOST')
+  } catch {
+    return null
+  }
+  const v = (value ?? '').trim()
+  if (!v) return null
+  return v.match(/^https?:\/\/([^/]+)/)?.[1] ?? v.replace(/\/+$/, '')
 }
 
 /** The host glab is logged in to, when it is logged in to exactly one. */

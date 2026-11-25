@@ -63,7 +63,7 @@ export function makeRuntime(options: PluginOptions): Runtime {
 const iso = (ms: number) => new Date(ms).toISOString()
 
 const nextDue = (rt: Runtime, link: Link, now: number) =>
-  now + (link.snap && link.snap.state !== 'opened' ? rt.mergedMs : rt.intervalMs)
+  now + (link.snap?.state === 'merged' ? rt.mergedMs : rt.intervalMs)
 
 const without = <T>(all: Record<string, T>, key: string) => {
   const copy = { ...all }

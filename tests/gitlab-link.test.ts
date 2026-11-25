@@ -257,3 +257,29 @@ test('links saved to the store come back when a fresh plugin worker starts with 
   expect(w.wakes.length).toBe(1)
   expect(w.wakes[0]).toContain('pipeline #11 success')
 })
+
+test('group/project!N outside a repository takes the host from GITLAB_HOST', async ($, on) => {
+  const g = fakeGitlab()
+  mock.clock(on, { now: 1 })
+  mock.env(on, { GITLAB_HOST: 'https://gl.example.com:8443/' })
+  world(on, g)
+  await start($)
+  const r = await call($, 'gitlab_link_mr', { mr: 'grp/app!7' })
+  expect(String(r.result)).toContain('app!7 · opened')
+  expect(g.calls).toContain('projects/grp%2Fapp/merge_requests/7')
+})
+
+test('a reopened MR is checked at the normal rate, not the merged one', async ($, on) => {
+  const g = fakeGitlab()
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const w = world(on, g)
+  await start($)
+  await call($, 'gitlab_wait_for', { mr: URL, condition: 'comment' }) // keeps it linked once closed
+  g.mr = { ...g.mr, state: 'closed' }
+  await clock.advance(61_000)
+  expect(w.wakes.length).toBe(1)
+  g.mr = { ...g.mr, state: 'opened', has_conflicts: true }
+  await clock.advance(61_000)
+  expect(w.wakes.length).toBe(2)
+  expect(w.wakes[1]).toContain('merge conflict')
+})

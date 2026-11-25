@@ -70,7 +70,7 @@ claude plugin uninstall gitlab-link@claude-gitlab-link
 
 The model gets these tools; people get `/gitlab-link [MR]` and `/gitlab-unlink <MR>`.
 
-An MR can be named by its URL, as `group/project!123`, or as `!123` for the session's own repository. Without a repository, `group/project!123` uses the one host glab is logged in to; with several hosts, give the URL.
+An MR can be named by its URL, as `group/project!123`, or as `!123` for the session's own repository. Outside a repository, `group/project!123` uses the host in `GITLAB_HOST` when it is set (as glab does), else the one host glab is logged in to; with several hosts and no `GITLAB_HOST`, give the URL.
 
 | Tool | What it does |
 | --- | --- |
