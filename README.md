@@ -187,6 +187,7 @@ Bug reports and pull requests are welcome at [github.com/twallgren/claude-gitlab
 ## What it can't do
 
 - It polls rather than using webhooks, because GitLab can't reach most laptops.
+- It runs only while the session's Claude Code process does. The desktop app stops idle sessions' processes when too many are open or memory is short, and while one is stopped nothing checks GitLab and nothing can wake it. Links and armed conditions are saved, so the first check after the session resumes (when you or another session send it a message) catches up on everything that happened meanwhile.
 - It can't add to the desktop app's built-in pull-request features, which are GitHub-only.
 - It never approves, merges or runs jobs. The session does those with glab.
 
