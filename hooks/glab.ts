@@ -1,7 +1,7 @@
 // GitLab REST calls through glab, so the mod reuses glab's login and holds no token.
 import type { EngineInterface } from 'claude-code'
 
-export type FailKind = 'auth' | 'notfound' | 'network' | 'server' | 'missing' | 'other'
+export type FailKind = 'auth' | 'forbidden' | 'notfound' | 'network' | 'server' | 'missing' | 'other'
 
 export type ApiResult<T> =
   | { ok: true; data: T }
@@ -19,10 +19,21 @@ async function glabCandidates(configured: string): Promise<string[]> {
 
 /** Sorts glab's stderr into the failures the mod treats differently. */
 export function classify(stderr: string): FailKind {
-  if (/\b(401|403)\b|unauthorized|forbidden|token/i.test(stderr)) return 'auth'
-  if (/\b404\b|not found/i.test(stderr)) return 'notfound'
-  if (/\b5\d\d\b/.test(stderr)) return 'server'
-  if (/dial|connection refused|no such host|timed? ?out|network is unreachable|tls|eof|reset by peer|lookup/i.test(stderr)) return 'network'
+  // The request URL is in the message, and an MR or job number in it can look like a status.
+  const said = stderr.replace(/https?:\/\/\S+/g, '')
+  // A status is only what glab writes as one: `(HTTP 404)`, or `<url>: 404 {…}`. A port is not.
+  const status = Number(said.match(/\bHTTP (\d{3})\b/)?.[1] ?? said.match(/(?:^|:\s+)([45]\d\d)(?=\s|$)/)?.[1] ?? 0)
+  if (status === 401 || /insufficient_scope|invalid_grant|invalid_token|cannot fetch token|refresh token/i.test(said)) return 'auth'
+  if (status === 403) return 'forbidden'
+  if (status === 404) return 'notfound'
+  if (status >= 500) return 'server'
+  if (status) return 'other'
+  // Network failures before the loose words: glab wraps long URLs, so part of a path
+  // (a project called token-service) can be left in the text.
+  if (/dial |connection refused|no such host|timed? ?out|network is unreachable|tls:|tls handshake|\beof\b|reset by peer|\blookup /i.test(said)) return 'network'
+  if (/unauthorized|invalid token|token (is )?(expired|revoked)/i.test(said)) return 'auth'
+  if (/forbidden/i.test(said)) return 'forbidden'
+  if (/not found/i.test(said)) return 'notfound'
   return 'other'
 }
 
@@ -136,8 +147,10 @@ export async function contains(
     `projects/${enc(project)}/repository/merge_base?refs[]=${sha}&refs[]=${tip}`,
     glabPath,
   )
-  if (!mb.ok) return mb
-  const isIn = mb.data.id === sha
+  // A commit GitLab no longer has (a deleted ref, since cleaned up) contains nothing.
+  const isUnknownRef = !mb.ok && (mb.kind === 'notfound' || /could not find ref/i.test(mb.detail))
+  if (!mb.ok && !isUnknownRef) return mb
+  const isIn = mb.ok && mb.data.id === sha
   ancestors.set(key, isIn)
   return { ok: true, data: isIn }
 }

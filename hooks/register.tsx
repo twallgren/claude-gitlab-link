@@ -115,6 +115,7 @@ export const register: Register = (on, options) => {
     if (!KINDS.includes(i.condition)) return { deny: `Unknown condition ${i.condition}.` }
     if (i.condition === 'job' && !i.job_id) return { deny: 'job needs job_id.' }
     if (i.condition === 'deployed' && !i.target) return { deny: 'deployed needs target.' }
+    if (i.since && Number.isNaN(Date.parse(i.since))) return { deny: `since is not a time: "${i.since}". Use ISO 8601.` }
     const r = await linkAndCheck($, rt, i.mr, undefined, {
       kind: i.condition, status: i.status, jobId: i.job_id, from: i.from,
       since: i.since, target: i.target, job: i.job,
@@ -134,7 +135,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'gitlab-link' }, async ($, e) => {
     if (!e.args.trim()) return { text: await listText($, rt) }
-    const r = await linkAndCheck($, rt, e.args, undefined)
+    const r = await linkAndCheck($, rt, e.args, undefined, undefined, true)
     return { text: 'error' in r ? r.error : r.text }
   })
 
@@ -162,9 +163,12 @@ export const register: Register = (on, options) => {
   // Quiet changes ride along on the next prompt, whoever starts it.
   on('prompt.submit', async ($, e, next) => {
     if (e.command) return next(e)
-    const lines = await read($, quiet)
-    if (lines.length === 0) return next(e)
-    await update($, quiet, () => [])
+    if ((await read($, quiet)).length === 0) return next(e)
+    let lines: string[] = []
+    await update($, quiet, l => {
+      lines = l
+      return []
+    })
     await save($, rt.sessionKey)
     return next({ ...e, context: [...(e.context ?? []), quietText(lines)] })
   })

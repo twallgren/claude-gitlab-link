@@ -1,6 +1,6 @@
 {
   "name": "gitlab-link",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Link GitLab merge requests (gitlab.com or self-hosted) to a session and wake it only on the events it waits for.",
   "types": "./types/index.d.ts",
   "userConfig": {

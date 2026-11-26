@@ -41,6 +41,8 @@ export type Snapshot = {
   pipelineUrl: string | null
   hasConflicts: boolean
   notesCount: number
+  /** Linked while GitLab was still working out mergeability: hasConflicts is not known yet. */
+  isConflictUnknown?: boolean
   deployCommit: string | null
 }
 
@@ -58,6 +60,14 @@ export type Link = {
   noteSince: string | null
   nextCheckAt: number
   linkedAt: string
+  /** The last check was refused with 403, and the session has been told. */
+  isForbidden?: boolean
+  /** Failed deploys already reported, so re-arming waits for the next one. */
+  reportedDeploys?: string[]
+  /** Set while this MR's checks fail although its host answers. */
+  failing?: { since: number; count: number; isTold: boolean }
+  /** The first read of the notes failed: older comments are not news when one succeeds. */
+  isNotesUnread?: boolean
 }
 
 /** A host that is failing: one record per outage. */
@@ -78,6 +88,8 @@ declare module 'claude-code' {
       health: Shaped<Record<string, HostHealth>>
       pendingWake: Shaped<string[]>
       quiet: Shaped<string[]>
+      /** Per MR key; kept when the link goes, so a later wait still knows. */
+      reportedDeploys: Shaped<Record<string, string[]>>
     }
   }
 }

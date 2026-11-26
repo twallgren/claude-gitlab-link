@@ -10,6 +10,7 @@ const links = atom({ plugin: 'gitlab-link', key: 'links' } as const, {}, { shape
 const health = atom({ plugin: 'gitlab-link', key: 'health' } as const, {}, { shape: 'health-1' })
 const pendingWake = atom({ plugin: 'gitlab-link', key: 'pendingWake' } as const, [], { shape: 'lines-1' })
 const quiet = atom({ plugin: 'gitlab-link', key: 'quiet' } as const, [], { shape: 'lines-1' })
+const reported = atom({ plugin: 'gitlab-link', key: 'reportedDeploys' } as const, {}, { shape: 'reported-1' })
 
 const SAVED = 's1:'
 const DIAG = 'd1:'
@@ -21,6 +22,7 @@ type Saved = {
   health: Record<string, HostHealth>
   pendingWake: string[]
   quiet: string[]
+  reportedDeploys?: Record<string, string[]>
 }
 
 export type Diag = {
@@ -41,6 +43,7 @@ export async function save($: EngineInterface, sessionKey: string) {
     health: await read($, health),
     pendingWake: await read($, pendingWake),
     quiet: await read($, quiet),
+    reportedDeploys: await read($, reported),
   }
   await $.store.set(SAVED + sessionKey, saved)
 }
@@ -60,6 +63,7 @@ export async function restore($: EngineInterface, sessionKey: string): Promise<n
     await update($, health, () => saved.health ?? {})
     await update($, pendingWake, () => saved.pendingWake ?? [])
     await update($, quiet, () => saved.quiet ?? [])
+    await update($, reported, () => saved.reportedDeploys ?? {})
   }
   await noteDiag($, sessionKey, d => ({ ...d, loads: d.loads + 1, lastLoadAt: now }))
   for (const key of await $.store.keys()) {

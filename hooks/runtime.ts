@@ -6,7 +6,7 @@ import type { Arm, HostHealth, Link, Problem } from '../types'
 import { checkLink, describeArm, type CheckCfg, type CheckOutcome } from './check'
 import { parseTargets } from './deploy'
 import { linkDetail, outageLine, wakeText } from './format'
-import { needsPerson, selfName, setupHelp, type FailKind } from './glab'
+import { api, needsPerson, selfName, setupHelp, type FailKind } from './glab'
 import { linkKey, parseMr, shortName } from './mr-ref'
 import { diagLine, noteDiag, save } from './persist'
 
@@ -15,6 +15,7 @@ const links = atom({ plugin: 'gitlab-link', key: 'links' } as const, {}, { shape
 const health = atom({ plugin: 'gitlab-link', key: 'health' } as const, {}, { shape: 'health-1' })
 const pendingWake = atom({ plugin: 'gitlab-link', key: 'pendingWake' } as const, [], { shape: 'lines-1' })
 const quiet = atom({ plugin: 'gitlab-link', key: 'quiet' } as const, [], { shape: 'lines-1' })
+const reported = atom({ plugin: 'gitlab-link', key: 'reportedDeploys' } as const, {}, { shape: 'reported-1' })
 
 export const PROBLEMS: Problem[] = ['pipeline', 'conflict', 'closed']
 
@@ -33,6 +34,11 @@ export type Runtime = {
   isSubmitting: boolean
   isTicking: boolean
   armCount: number
+  /** The end of the queue of work on links: see `inTurn`. */
+  queueTail: Promise<unknown>
+  /** A wake the engine would not take is retried no sooner than this. */
+  wakeRetryAt: number
+  wakeDrops: number
   /** The session's transcript path: the key its links are saved under. */
   sessionKey: string
 }
@@ -56,11 +62,24 @@ export function makeRuntime(options: PluginOptions): Runtime {
     isSubmitting: false,
     isTicking: false,
     armCount: 0,
+    queueTail: Promise.resolve(),
+    wakeRetryAt: 0,
+    wakeDrops: 0,
     sessionKey: '',
   }
 }
 
 const iso = (ms: number) => new Date(ms).toISOString()
+
+/**
+ * Runs work on the links one piece at a time. A timer check overlapping a tool
+ * call could otherwise report a wait twice, or bring back one just disarmed.
+ */
+function inTurn<T>(rt: Runtime, work: () => Promise<T>): Promise<T> {
+  const run = rt.queueTail.then(work, work)
+  rt.queueTail = run.then(() => undefined, () => undefined)
+  return run
+}
 
 // A merged MR is checked less often, unless a deploy wait is armed: that one is time-sensitive.
 const nextDue = (rt: Runtime, link: Link, now: number) =>
@@ -80,11 +99,16 @@ async function apply($: EngineInterface, rt: Runtime, before: Link, out: CheckOu
     const added = nowLink.arms.filter(a => !before.arms.some(b => b.id === a.id))
     if (out.link === null && added.length === 0) return without(all, before.key)
     const base = out.link ?? nowLink
+    const kept = (out.link?.arms ?? []).filter(a => nowLink.arms.some(b => b.id === a.id))
     return {
       ...all,
-      [before.key]: { ...base, problems: nowLink.problems, arms: [...base.arms, ...added], nextCheckAt: nextDue(rt, base, now) },
+      [before.key]: { ...base, problems: nowLink.problems, arms: [...kept, ...added], nextCheckAt: nextDue(rt, base, now) },
     }
   })
+}
+
+async function remember($: EngineInterface, key: string, deploys: string[]) {
+  if (deploys.length) await update($, reported, all => ({ ...all, [key]: deploys }))
 }
 
 async function queue($: EngineInterface, link: Link, wake: string[], q: string[]) {
@@ -129,6 +153,77 @@ async function hostOk($: EngineInterface, host: string, now: number) {
   await update($, health, all => without(all, host))
 }
 
+async function checkDue($: EngineInterface, rt: Runtime, key: string, now: number, downHosts: Set<string>) {
+  // Read again: a tool call ahead in the queue may have changed or checked it.
+  const link = (await read($, links))[key]
+  if (!link || link.nextCheckAt > now) return
+  const out = await checkLink($, link, rt.cfg)
+  // Unlinked while the check ran: nothing it found is wanted.
+  if (!(await read($, links))[key]) return
+  if (out.ok) {
+    await hostOk($, link.host, now)
+    await apply($, rt, link, out, now)
+    await remember($, key, out.reportedDeploys)
+    await queue($, link, [...out.wake, ...out.broken], out.quiet)
+  } else {
+    await checkFailed($, rt, link, out, now, downHosts)
+  }
+}
+
+/**
+ * Whether the trouble is the host's or this MR's. A fresh request for glab's own
+ * user (not the cached name) tells: a lost login shows up here, where a private
+ * MR only answers 404, and a host that answers it is not down.
+ */
+async function checkFailed(
+  $: EngineInterface, rt: Runtime, link: Link, out: CheckOutcome & { ok: false }, now: number, downHosts: Set<string>,
+) {
+  // A timeout can be one slow request, so network failures are probed too.
+  const probe = needsPerson(out.kind) ? null : await api<unknown>($, link.host, 'user', rt.glabPath)
+  // Unlinked while we asked: say nothing about it.
+  if (probe && !(await read($, links))[link.key]) return
+  if (!probe || !probe.ok) {
+    // A 404 from the probe too means this login cannot be trusted: never unlink on it.
+    const cause = probe && !probe.ok && (needsPerson(probe.kind) || probe.kind === 'network') ? probe : out
+    downHosts.add(link.host)
+    await patch($, link.key, { failing: undefined })
+    await hostFailed($, rt, link.host, cause.kind === 'notfound' ? 'other' : cause.kind, cause.detail, now)
+    return
+  }
+  await hostOk($, link.host, now)
+  if (out.gone) {
+    await update($, links, all => without(all, link.key))
+    const msg = 'MR not found (deleted, moved, or no access); unlinked'
+    if (link.arms.length) await queue($, link, [`${msg}; disarmed: ${link.arms.map(describeArm).join(', ')}`], [])
+    else await queue($, link, [], [msg])
+    return
+  }
+  if (out.kind === 'forbidden') {
+    // It may be passing: keep the link, say so once, try again later.
+    if (!link.isForbidden) {
+      const msg = "glab's user is not allowed to read this MR (403); still trying"
+      await queue($, link, link.arms.length ? [msg] : [], link.arms.length ? [] : [msg])
+    }
+    await patch($, link.key, { isForbidden: true, failing: undefined, nextCheckAt: now + rt.maxBackoffMs })
+    return
+  }
+  // Only this MR is failing: back it off alone, and wake once if that lasts.
+  const old = link.failing
+  const failing = { since: old?.since ?? now, count: (old?.count ?? 0) + 1, isTold: old?.isTold ?? false }
+  if (!failing.isTold && link.arms.length > 0 && now - failing.since >= rt.outageMs) {
+    failing.isTold = true
+    await queue($, link, [`checks of this MR have failed for ${Math.round((now - failing.since) / 60000)} min (${out.kind}: ${out.detail}); still trying`], [])
+  }
+  await patch($, link.key, { failing, nextCheckAt: now + Math.min(60_000 * 2 ** (failing.count - 1), rt.maxBackoffMs) })
+}
+
+async function patch($: EngineInterface, key: string, values: Partial<Link>) {
+  await update($, links, all => {
+    const l = all[key]
+    return l ? { ...all, [key]: { ...l, ...values } } : all
+  })
+}
+
 /** Every 15 s: check the links that are due, on hosts not backing off. */
 export async function tick($: EngineInterface, rt: Runtime) {
   if (rt.isTicking) return
@@ -147,26 +242,22 @@ async function tickOnce($: EngineInterface, rt: Runtime) {
   {
     const now = await $.clock.now()
     await noteDiag($, rt.sessionKey, d => ({ ...d, ticks: d.ticks + 1, lastTickAt: now }))
+    const hosts = new Set(Object.values(await read($, links)).map(l => l.host))
+    for (const host of Object.keys(await read($, health))) {
+      if (!hosts.has(host)) await update($, health, all => without(all, host))
+    }
     const hs = await read($, health)
     const due = Object.values(await read($, links)).filter(
       l => l.nextCheckAt <= now && (hs[l.host]?.nextTryAt ?? 0) <= now,
     )
     const downHosts = new Set<string>()
-    for (const link of due) {
-      if (downHosts.has(link.host)) continue
-      const out = await checkLink($, link, rt.cfg)
-      if (out.ok) {
-        await hostOk($, link.host, now)
-        await apply($, rt, link, out, now)
-        await queue($, link, out.wake, out.quiet)
-      } else if (out.gone) {
-        await update($, links, all => without(all, link.key))
-        const msg = 'MR not found (deleted, moved, or no access); unlinked'
-        if (link.arms.length) await queue($, link, [`${msg}; disarmed: ${link.arms.map(describeArm).join(', ')}`], [])
-        else await queue($, link, [], [msg])
-      } else {
-        downHosts.add(link.host)
-        await hostFailed($, rt, link.host, out.kind, out.detail, now)
+    for (const queued of due) {
+      if (downHosts.has(queued.host)) continue
+      try {
+        await inTurn(rt, () => checkDue($, rt, queued.key, now, downHosts))
+      } catch (err) {
+        // One link's surprise must not stop the others being checked.
+        await noteDiag($, rt.sessionKey, d => ({ ...d, lastError: `${queued.key}: ${String(err)}`.slice(0, 300), lastErrorAt: now }))
       }
     }
     await save($, rt.sessionKey)
@@ -177,16 +268,41 @@ async function tickOnce($: EngineInterface, rt: Runtime) {
 /** One wake for everything pending, only while the session is idle. */
 export async function deliver($: EngineInterface, rt: Runtime) {
   if (rt.isBusy || rt.isSubmitting) return
-  const lines = await read($, pendingWake)
-  if (lines.length === 0) return
+  if ((await read($, pendingWake)).length === 0 || (await $.clock.now()) < rt.wakeRetryAt) return
+  if (rt.isSubmitting) return
   rt.isSubmitting = true
   try {
+    // Read and clear in one step, so a line queued meanwhile is not erased.
+    let lines: string[] = []
+    await update($, pendingWake, l => {
+      lines = l
+      return []
+    })
     // A plugin's own submit skips its prompt.submit hook, so quiet lines ride in the wake text.
-    const also = await read($, quiet)
-    await update($, pendingWake, () => [])
-    await update($, quiet, () => [])
+    let also: string[] = []
+    await update($, quiet, l => {
+      also = l
+      return []
+    })
     await save($, rt.sessionKey)
-    await $.prompt.submit({ text: wakeText(lines, Object.values(await read($, links)), also) })
+    let refused: string | null = null
+    try {
+      const sent = await $.prompt.submit({ text: wakeText(lines, Object.values(await read($, links)), also) })
+      if (sent?.drop !== undefined) refused = String(sent.drop)
+    } catch (err) {
+      refused = String(err)
+    }
+    if (refused === null) {
+      rt.wakeDrops = 0
+      return
+    }
+    // The prompt did not get in: put everything back and try again, backing off.
+    const at = await $.clock.now()
+    rt.wakeRetryAt = at + Math.min(15_000 * 2 ** rt.wakeDrops++, rt.maxBackoffMs)
+    await update($, pendingWake, l => [...lines, ...l])
+    await update($, quiet, l => [...also, ...l])
+    await save($, rt.sessionKey)
+    await noteDiag($, rt.sessionKey, d => ({ ...d, lastError: `wake not submitted: ${refused}`.slice(0, 300), lastErrorAt: at }))
   } finally {
     rt.isSubmitting = false
   }
@@ -201,6 +317,7 @@ async function linkAndCheckInner(
   mrText: string,
   problems: Problem[] | undefined,
   arm?: ArmSpec,
+  isFromPerson = false,
 ): Promise<{ error: string } | { text: string }> {
   const ref = await parseMr($, mrText, rt.glabPath)
   if ('error' in ref) return ref
@@ -215,6 +332,7 @@ async function linkAndCheckInner(
   const link: Link = existing ?? {
     key, ...ref, problems: problems ?? rt.defaultProblems, arms: [], snap: null,
     fired: {}, noteSince: null, nextCheckAt: now + rt.intervalMs, linkedAt: iso(now),
+    reportedDeploys: (await read($, reported))[key],
   }
   const withArm: Link = {
     ...link,
@@ -225,7 +343,11 @@ async function linkAndCheckInner(
   const out = await checkLink($, withArm, rt.cfg)
   if (!out.ok) {
     // Put the link back as it was: nothing new stays linked or armed on a failure the person must fix.
-    const undo = () => update($, links, all => (existing ? { ...all, [key]: existing } : without(all, key)))
+    const undo = () => update($, links, all => (!all[key] ? all : existing ? { ...all, [key]: existing } : without(all, key)))
+    if (out.kind === 'forbidden') {
+      await undo()
+      return { error: `glab's user on ${ref.host} is not allowed to read what ${shortName(ref)} needs (403); nothing was ${arm ? 'armed' : 'linked'}.` }
+    }
     if (needsPerson(out.kind)) {
       await undo()
       return { error: `Could not reach ${ref.host} for ${shortName(ref)}; nothing was ${arm ? 'armed' : 'linked'}. ${setupHelp(out.kind, ref.host)}` }
@@ -239,12 +361,18 @@ async function linkAndCheckInner(
       }
       return { error: `${shortName(ref)} was not found on ${ref.host}, or glab's user (${me.ok ? me.data : 'unknown'}) has no access to it.` }
     }
+    if (!(await read($, links))[key]) return { text: `${shortName(ref)}: unlinked while it was being checked.` }
     return { text: `${shortName(ref)} linked, but GitLab could not be read (${out.kind}: ${out.detail}). It will be retried.\n${linkDetail(withArm)}` }
   }
   await hostOk($, ref.host, now)
+  // Unlinked while the check ran: nothing it found is wanted.
+  if (!(await read($, links))[key]) return { text: `${shortName(ref)}: unlinked while it was being checked.` }
   await apply($, rt, withArm, out, now)
+  await remember($, key, out.reportedDeploys)
+  // A command's answer goes to the person: what it used up still has to reach the model.
+  if (isFromPerson) await queue($, withArm, [...out.wake, ...out.broken], out.quiet)
   const after = (await read($, links))[key]
-  const found = [...out.wake.map(w => `met now: ${w}`), ...out.quiet]
+  const found = [...out.wake.map(w => `met now: ${w}`), ...out.broken, ...out.quiet]
   return {
     text: [
       after ? linkDetail(after) : `${shortName(ref)}: no longer linked`,
@@ -294,11 +422,13 @@ export async function listText($: EngineInterface, rt: Runtime): Promise<string>
 
 /** The actions behind the tools: each saves the session's values when done. */
 export async function linkAndCheck(
-  $: EngineInterface, rt: Runtime, mrText: string, problems: Problem[] | undefined, arm?: ArmSpec,
+  $: EngineInterface, rt: Runtime, mrText: string, problems: Problem[] | undefined, arm?: ArmSpec, isFromPerson = false,
 ): Promise<{ error: string } | { text: string }> {
-  const r = await linkAndCheckInner($, rt, mrText, problems, arm)
-  await save($, rt.sessionKey)
-  return r
+  return inTurn(rt, async () => {
+    const r = await linkAndCheckInner($, rt, mrText, problems, arm, isFromPerson)
+    await save($, rt.sessionKey)
+    return r
+  })
 }
 
 export async function unlink($: EngineInterface, rt: Runtime, mrText: string): Promise<string> {
@@ -308,7 +438,9 @@ export async function unlink($: EngineInterface, rt: Runtime, mrText: string): P
 }
 
 export async function unarm($: EngineInterface, rt: Runtime, mrText: string, armId?: string, condition?: string): Promise<string> {
-  const r = await unarmInner($, rt, mrText, armId, condition)
-  await save($, rt.sessionKey)
-  return r
+  return inTurn(rt, async () => {
+    const r = await unarmInner($, rt, mrText, armId, condition)
+    await save($, rt.sessionKey)
+    return r
+  })
 }

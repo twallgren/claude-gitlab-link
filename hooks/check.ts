@@ -10,7 +10,8 @@ import { api, enc, selfName, type FailKind } from './glab'
 export type CheckCfg = { glabPath: string; targets: DeployTargets }
 
 export type CheckOutcome =
-  | { ok: true; link: Link | null; wake: string[]; quiet: string[] }
+  /** broken: waits GitLab refused outright (a wrong job id, no access); disarmed. */
+  | { ok: true; link: Link | null; wake: string[]; quiet: string[]; broken: string[]; reportedDeploys: string[] }
   | { ok: false; kind: FailKind; detail: string; gone: boolean }
 
 type MrJson = {
@@ -19,20 +20,29 @@ type MrJson = {
   web_url: string
   sha: string
   has_conflicts: boolean
+  merge_status?: string
   user_notes_count: number
   merge_commit_sha: string | null
   squash_commit_sha: string | null
-  head_pipeline: { id: number; sha: string; status: string; web_url: string } | null
+  head_pipeline: { id: number; sha: string; status: string; web_url: string; ref?: string } | null
 }
 
 type Note = { body: string; system: boolean; created_at: string; author: { username: string }; id: number }
 
+const NOTE_PAGE = 50
+const NOTE_PAGES = 10
 const PIPELINE_FINAL = new Set(['success', 'failed', 'canceled', 'skipped', 'manual'])
 const JOB_FINAL = new Set(['success', 'failed', 'canceled', 'skipped'])
 /** Conditions that can still fire on a merged MR. */
 const AFTER_MERGE = new Set(['comment', 'deployed', 'pipeline', 'job', 'merged'])
 
 export const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s)
+/** Someone else's text, kept to one line so it cannot pose as more of the mod's own lines. */
+const quoted = (s: string, n: number) => clip(s.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ⏎ '), n)
+/** Compares as times: GitLab may write them with an offset, and so may a `since` argument. */
+const isAfter = (a: string, b: string) => Date.parse(a) > Date.parse(b)
+/** While GitLab is working out mergeability, has_conflicts reads false whatever is true. */
+const RECHECKING = new Set(['unchecked', 'checking', 'cannot_be_merged_recheck', 'cannot_be_merged_rechecking'])
 
 export function toSnapshot(mr: MrJson): Snapshot {
   return {
@@ -75,6 +85,23 @@ export async function checkLink(
   if (!mr.ok) return { ok: false, kind: mr.kind, detail: mr.detail, gone: mr.kind === 'notfound' }
   const cur = toSnapshot(mr.data)
   const prev = link.snap
+  // `locked` lasts only while a merge is being made, and may fall back to opened.
+  if (cur.state === 'locked') cur.state = prev?.state ?? 'opened'
+  if (!cur.hasConflicts && RECHECKING.has(mr.data.merge_status ?? '')) {
+    cur.hasConflicts = prev?.hasConflicts ?? false
+    cur.isConflictUnknown = prev ? prev.isConflictUnknown : true
+  }
+  // A merged-results or merge-train pipeline runs on a temporary merge commit: it is
+  // the head's pipeline when the head is a parent of that commit.
+  const head = mr.data.head_pipeline
+  if (head && head.sha !== cur.sha && new RegExp(`^refs/merge-requests/${iid}/(merge|train)$`).test(head.ref ?? '')) {
+    if (prev?.pipelineId === head.id && prev.sha === cur.sha && prev.pipelineSha === cur.sha) cur.pipelineSha = cur.sha
+    else {
+      const commit = await get<{ parent_ids?: string[] }>(`projects/${enc(project)}/repository/commits/${head.sha}`)
+      if (!commit.ok && commit.kind !== 'notfound') return fail(commit)
+      if (commit.ok && commit.data.parent_ids?.includes(cur.sha)) cur.pipelineSha = cur.sha
+    }
+  }
   const wake: string[] = []
   const quiet: string[] = []
   const fired = { ...link.fired }
@@ -82,6 +109,8 @@ export async function checkLink(
 
   // Default problems: each fires once per change, on the current head only.
   const headFailed = cur.pipelineStatus === 'failed' && cur.pipelineSha === cur.sha
+  // The same pipeline seen running again (a retried job) may fail again: report that too.
+  if (fired.pipelineId === cur.pipelineId && cur.pipelineStatus !== 'failed') fired.pipelineId = undefined
   if (cur.state === 'opened' && headFailed && fired.pipelineId !== cur.pipelineId) {
     fired.pipelineId = cur.pipelineId ?? undefined
     if (prev && link.problems.includes('pipeline')) {
@@ -94,7 +123,8 @@ export async function checkLink(
   }
   if (cur.state === 'opened' && cur.hasConflicts && !fired.conflict) {
     fired.conflict = true
-    if (prev && link.problems.includes('conflict')) wake.push('merge conflict with the target branch')
+    // The first settled read of a conflict that may have been there at link time is not news.
+    if (prev && !prev.isConflictUnknown && link.problems.includes('conflict')) wake.push('merge conflict with the target branch')
   } else if (!cur.hasConflicts && fired.conflict) {
     fired.conflict = false
     quiet.push('merge conflict cleared')
@@ -106,28 +136,49 @@ export async function checkLink(
 
   // Comments: read only when the count moved or a comment wait is armed.
   let noteSince = link.noteSince
+  let isNotesUnread = link.isNotesUnread ?? false
   const commentArms = arms.filter(a => a.kind === 'comment')
   if (!prev || prev.notesCount !== cur.notesCount || commentArms.length > 0) {
-    const notes = await get<Note[]>(`${base}/notes?sort=desc&order_by=created_at&per_page=50`)
+    // Page back far enough to reach what has not been read: a long gap can hold many notes.
+    const marks = [noteSince, ...commentArms.map(x => x.since)].filter((x): x is string => !!x)
+    const oldest = marks.reduce((m, x) => (!m || isAfter(m, x) ? x : m), '')
+    const all: Note[] = []
+    let failed: { kind: FailKind; detail: string } | null = null
+    for (let page = 1; page <= NOTE_PAGES; page++) {
+      const got = await get<Note[]>(`${base}/notes?sort=desc&order_by=created_at&per_page=${NOTE_PAGE}&page=${page}`)
+      if (!got.ok) { failed = got; break }
+      all.push(...got.data)
+      const last = got.data.at(-1)
+      if (got.data.length < NOTE_PAGE || !oldest || !last || !isAfter(last.created_at, oldest)) break
+    }
     const me = await selfName($, host, cfg.glabPath)
-    if (notes.ok && me.ok) {
+    if (!failed && !me.ok) failed = me
+    // A failed read must not move the snapshot on, or the comment would be missed. With a
+    // comment wait armed the check fails; without one the rest carries on and this is retried.
+    if (failed && commentArms.length > 0) return fail(failed)
+    if (failed) cur.notesCount = -1
+    const notes = { data: all }
+    if (failed && !prev) isNotesUnread = true
+    if (!failed) isNotesUnread = false
+    if (!failed && me.ok)
+    {
       const others = notes.data
         .filter(n => !n.system && n.author.username !== me.data)
         .reverse()
       const fresh = (since: string | null | undefined) =>
-        others.filter(n => !since || n.created_at > since)
-      const newest = notes.data.reduce((m, n) => (n.created_at > m ? n.created_at : m), noteSince ?? '')
+        others.filter(n => !since || isAfter(n.created_at, since))
+      const newest = notes.data.reduce((m, n) => (!m || isAfter(n.created_at, m) ? n.created_at : m), noteSince ?? '')
       const told = new Set<number>()
       for (const arm of commentArms) {
         const hits = fresh(arm.since).filter(n => !arm.from || n.author.username === arm.from)
         if (hits.length === 0) continue
         for (const n of hits) told.add(n.id)
-        wake.push(...hits.map(n => `comment by ${n.author.username}: ${clip(n.body, 1500)} ${cur.webUrl}#note_${n.id}`))
+        wake.push(...hits.map(n => `comment by ${n.author.username}: ${quoted(n.body, 1500)} ${cur.webUrl}#note_${n.id}`))
         arms = arms.filter(a => a.id !== arm.id)
       }
       if (prev) {
-        for (const n of fresh(noteSince)) {
-          if (!told.has(n.id)) quiet.push(`comment by ${n.author.username}: ${clip(n.body, 300)}`)
+        for (const n of fresh(noteSince ?? (link.isNotesUnread ? link.linkedAt : null))) {
+          if (!told.has(n.id)) quiet.push(`comment by ${n.author.username}: ${quoted(n.body, 300)}`)
         }
       }
       noteSince = newest || noteSince
@@ -137,12 +188,21 @@ export async function checkLink(
   // Armed conditions, one shot each.
   const keep: Arm[] = []
   const cannot: Arm[] = []
+  const broken: string[] = []
+  let reportedDeploys = link.reportedDeploys ?? []
   for (const arm of arms) {
     if (arm.kind === 'comment') { keep.push(arm); continue }
     if (cur.state === 'closed' && arm.kind !== 'job') { cannot.push(arm); continue }
     if (cur.state === 'merged' && !AFTER_MERGE.has(arm.kind)) { cannot.push(arm); continue }
     const hit = await evalArm($, link, arm, cur, cfg)
-    if (!hit.ok) return fail(hit)
+    if (!hit.ok) {
+      // GitLab refusing this one read is about this wait, not about the host: retrying cannot help.
+      if (hit.kind !== 'notfound' && hit.kind !== 'forbidden') return fail(hit)
+      const why = hit.kind === 'notfound' ? 'GitLab has no such thing (404)' : "glab's user is not allowed to read it (403)"
+      broken.push(`${describeArm(arm)} wait disarmed: ${why}`)
+      continue
+    }
+    if (hit.reported) reportedDeploys = [...new Set([...reportedDeploys, hit.reported])].slice(-50)
     if (hit.line === null) keep.push(arm)
     else if (hit.line !== '') wake.push(hit.line)
     else quiet.push(`${describeArm(arm)} wait disarmed: ${hit.why}`)
@@ -161,14 +221,14 @@ export async function checkLink(
     quiet.push(`state: ${prev.state} → ${cur.state}`)
   }
 
-  const next: Link = { ...link, snap: cur, fired, noteSince, arms: keep }
+  const next: Link = { ...link, snap: cur, fired, noteSince, arms: keep, reportedDeploys, isNotesUnread, isForbidden: false, failing: undefined }
   const isDone = cur.state !== 'opened' && keep.length === 0
   if (isDone) quiet.push(`unlinked (${cur.state})`)
-  return { ok: true, link: isDone ? null : next, wake: [...new Set(wake)], quiet }
+  return { ok: true, link: isDone ? null : next, wake: [...new Set(wake)], quiet, broken, reportedDeploys }
 }
 
 type ArmHit =
-  | { ok: true; line: string | null; why?: string }
+  | { ok: true; line: string | null; why?: string; reported?: string }
   | { ok: false; kind: FailKind; detail: string }
 
 /** `line` null: still waiting; '' : disarmed quietly (`why`); else the wake line. */
@@ -215,13 +275,14 @@ async function evalArm($: EngineInterface, link: Link, arm: Arm, cur: Snapshot, 
       const hit = await checkDeployed(
         $,
         { host: link.host, project: link.project, glabPath: cfg.glabPath },
-        cur.deployCommit, cfg.targets, arm.target ?? '', arm.job,
+        cur.deployCommit, cfg.targets, arm.target ?? '', arm.job, link.reportedDeploys,
       )
       if (!hit.ok) return hit
       if (!hit.data) return { ok: true, line: null }
       const d = hit.data
       return {
         ok: true,
+        reported: d.status === 'success' ? undefined : d.key,
         line: [
           `deployed ${arm.target}:`, d.job === arm.target ? '' : d.job, d.status, `at ${d.sha.slice(0, 8)}`,
           d.note ? `(${d.note})` : '', d.url,

@@ -100,11 +100,11 @@ An MR can be named by its URL, as `group/project!123`, or as `!123` for the sess
 | `approved` | The MR is approved by at least one person (and by enough people where approvals are required). |
 | `merged` | The MR is merged. |
 | `conflict` | A merge conflict appears. |
-| `deployed` | A deploy containing the MR's merge (or squash) commit finishes, with success, failure or cancellation. It waits for the merge first. |
+| `deployed` | A deploy containing the MR's merge (or squash) commit finishes, with success, failure or cancellation. It waits for the merge first. A success wins over an earlier failure. A failure waits while a newer deploy is running, and once reported isn't reported again: arm again to wait for the retry. |
 
 An MR stays linked after it is merged while a `comment`, `deployed`, `pipeline`, `job` or `merged` condition is armed on it, and it is checked less often then, except while `deployed` is armed.
 
-A problem already present when an MR is linked, such as a pipeline that has already failed, shows in the link's status but sends no wake. A condition that can no longer fire, such as `approved` on a closed MR, is disarmed and reported in one wake.
+A problem already present when an MR is linked, such as a pipeline that has already failed, shows in the link's status but sends no wake. A condition that can no longer fire, such as `approved` on a closed MR, is disarmed and reported in one wake. So is a wait GitLab refuses to answer, such as a job id that doesn't exist or deployments glab's user may not read; the host's other checks carry on.
 
 ### Deploy targets
 
@@ -132,7 +132,8 @@ A problem already present when an MR is linked, such as a pipeline that has alre
 - Nothing is lost. Each check compares GitLab with the last state it read, so the first check after recovery catches up on everything.
 - If a condition is armed, the session gets one wake once the outage has lasted an hour.
 - A rejected glab login or a missing glab sends you a desktop notification instead of waking the session, since only you can fix those.
-- An MR that returns 404 is unlinked.
+- An outage is a host that stops answering. When one MR's checks fail while the host still answers, only that MR is retried less often, it shows `checks failing`, and a session with something armed on it is woken once if that lasts an hour.
+- An MR that returns 404 is unlinked, once a second request confirms glab's login still works. One that returns 403 stays linked and the session is told once.
 
 ## Settings
 
@@ -161,12 +162,12 @@ If glab is missing or not logged in, linking and arming are refused with the ste
 
 - The mod talks only to your GitLab hosts, through glab, with glab's own login. It holds no token and sends nothing anywhere else.
 - Checking costs no model tokens. Each wake is one model turn, billed like any other.
-- Comment text from an MR goes into the session's context when a comment wait fires, or quietly on the next turn.
+- Comment text from an MR goes into the session's context when a comment wait fires, or quietly on the next turn. It is kept to one line and marked as the commenter's words, not an instruction from you. Anyone who can comment on a linked MR can put text there, so weigh that for public projects.
 - Each session's links and armed conditions are saved in Claude Code's local plugin store, so they survive a restart of the plugin or the session, and are pruned 14 days after a session last saved them.
 
 ## Compatibility
 
-Tested live against a self-hosted GitLab and gitlab.com. The `deployed` condition is covered by tests but has not yet been seen firing against a live server. Reports are welcome.
+Tested live against a self-hosted GitLab and gitlab.com. On gitlab.com, `deployed` has been tested live with environment targets. Merged-results and merge-train pipelines are covered by tests only. Reports are welcome.
 
 ## Developing
 
