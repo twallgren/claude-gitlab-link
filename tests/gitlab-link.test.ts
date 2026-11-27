@@ -330,7 +330,7 @@ test('a reopened MR is checked at the normal rate, not the merged one', async ($
   expect(w.wakes[1]).toContain('merge conflict')
 })
 
-test('a wake row shows only its first line until expanded; other rows are untouched', async ($, on) => {
+test('a wake row is shortened, on desktop even when expanded; other rows are untouched', async ($, on) => {
   mock.store(on)
   on('tool.register', (() => ({ value: {} })) as never)
   on('command.register', ((_: unknown, e: { name: string }) => ({ value: { command: e.name } })) as never)
@@ -343,15 +343,39 @@ test('a wake row shows only its first line until expanded; other rows are untouc
   }) as never)
   await start($)
   const wake = 'Automatic GitLab update, not typed by you: app!7: merged.\n\n<gitlab-mr-event>\n- app!7: merged\n</gitlab-mr-event>'
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const row = (text: string, isExpanded: boolean, name = 'gitlab-link') =>
-      $.ui.render({ surface, component: 'UserMessage', props: { text, origin: { kind: 'plugin', name }, isExpanded } } as never)
-    drawn.length = 0
-    await row(wake, false)
-    await row(wake, true)
-    await row(wake, false, 'other-mod')
-    expect(drawn).toEqual(['Automatic GitLab update, not typed by you: app!7: merged.', wake, wake])
-  }
+  const head = 'Automatic GitLab update, not typed by you: app!7: merged.'
+  const framed = `The gitlab-link plugin sent a message:\n${wake}`
+  const many = [
+    'The gitlab-link plugin sent a message:',
+    'Automatic GitLab update, not typed by you: app!7: merged (and 1 more).',
+    '',
+    '<gitlab-mr-event>',
+    '- app!7: merged',
+    '- app!8: approved by sam',
+    'Nothing else is armed.',
+    'Other changes since your last turn that nothing was armed for:',
+    '- app!9: pipeline running',
+    '</gitlab-mr-event>',
+  ].join('\n')
+  const row = (surface: 'terminal' | 'desktop', text: string, isExpanded: boolean, name = 'gitlab-link') =>
+    $.ui.render({ surface, component: 'UserMessage', props: { text, origin: { kind: 'plugin', name }, isExpanded } } as never)
+
+  await row('terminal', wake, false)
+  await row('terminal', wake, true)
+  await row('terminal', wake, false, 'other-mod')
+  expect(drawn).toEqual([head, wake, wake])
+
+  drawn.length = 0
+  await row('desktop', framed, true)
+  await row('desktop', many, true)
+  await row('desktop', framed, true, 'other-mod')
+  await row('desktop', 'something else', true)
+  expect(drawn).toEqual([
+    head,
+    'Automatic GitLab update, not typed by you: app!7: merged (and 1 more).\n- app!7: merged\n- app!8: approved by sam',
+    framed,
+    'something else',
+  ])
 })
 
 test('approved waits for a person when no approvals are required', async ($, on) => {

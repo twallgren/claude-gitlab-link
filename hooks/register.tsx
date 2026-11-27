@@ -4,7 +4,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { ArmKind, Problem } from '../types'
-import { linkStatus, outageLine, quietText } from './format'
+import { linkStatus, outageLine, quietText, wakeRow } from './format'
 import { restore, save } from './persist'
 import { deliver, linkAndCheck, listText, makeRuntime, PROBLEMS, tick, unarm, unlink } from './runtime'
 
@@ -173,15 +173,15 @@ export const register: Register = (on, options) => {
     return next({ ...e, context: [...(e.context ?? []), quietText(lines)] })
   })
 
-  // A wake is a plugin prompt the chat shows as a message row: in the compact view,
-  // draw only its first line (the plain sentence for the person); ctrl+o shows all.
+  // A wake is a plugin prompt the chat shows as a message row: draw only the part
+  // written for the person. The terminal's ctrl+o shows all. The desktop app marks
+  // every row expanded, so it is shortened there regardless.
   on('ui.render', { component: 'UserMessage' }, async (_$, e, next) => {
     const o = e.props.origin
     const isOurs = o.kind === 'plugin' && o.name === 'gitlab-link'
-    if (!isOurs || e.props.isExpanded) return next(e)
-    const first = e.props.text.split('\n')[0] ?? ''
-    if (!first.startsWith('Automatic GitLab update')) return next(e)
-    return next({ ...e, props: { ...e.props, text: first } })
+    if (!isOurs || (e.props.isExpanded && e.surface !== 'desktop')) return next(e)
+    const text = wakeRow(e.props.text, e.surface === 'desktop')
+    return text === null ? next(e) : next({ ...e, props: { ...e.props, text } })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

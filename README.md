@@ -23,7 +23,7 @@ gitlab-link checks GitLab itself, inside Claude Code, without spending model tok
      armed a1x9k2: pipeline (since 2026-11-25T21:24:15.905Z)
    ```
 
-4. Carry on, or leave the session idle. When the pipeline finishes, the session wakes with a turn like this. It shows in the conversation as a message from the plugin, drawn as its first line only, which is written for you; ctrl+o (or the expanded view) shows the rest, written for Claude:
+4. Carry on, or leave the session idle. When the pipeline finishes, the session wakes with a turn like this. It shows in the conversation as a message from the plugin, drawn as its first line only, which is written for you. In the terminal, ctrl+o shows the rest, written for Claude. The desktop app has no way to expand it, so when one wake carries several events, it lists each of them under the first line. The full message is:
 
    ```
    Automatic GitLab update, not typed by you: app!42: pipeline #1234 failed (failed jobs: test:unit).
