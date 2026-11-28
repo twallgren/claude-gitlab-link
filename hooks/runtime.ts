@@ -2,9 +2,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions } from 'claude-code'
 
-import type { Arm, HostHealth, Link, Problem } from '../types'
+import type { Arm, DeliveryChoice, EventName, HostHealth, IgnoreKey, IgnoredUsers, Link } from '../types'
 import { checkLink, describeArm, type CheckCfg, type CheckOutcome } from './check'
 import { parseTargets } from './deploy'
+import { choiceFor, pendingOnce, readDefaults, unlinksWhenDone, type Defaults } from './delivery'
 import { linkDetail, outageLine, wakeText } from './format'
 import { api, needsPerson, selfName, setupHelp, type FailKind } from './glab'
 import { linkKey, parseMr, shortName } from './mr-ref'
@@ -17,16 +18,14 @@ const pendingWake = atom({ plugin: 'gitlab-link', key: 'pendingWake' } as const,
 const quiet = atom({ plugin: 'gitlab-link', key: 'quiet' } as const, [], { shape: 'lines-1' })
 const reported = atom({ plugin: 'gitlab-link', key: 'reportedDeploys' } as const, {}, { shape: 'reported-1' })
 
-export const PROBLEMS: Problem[] = ['pipeline', 'conflict', 'closed']
-
 export type Runtime = {
   intervalMs: number
   mergedMs: number
   maxBackoffMs: number
   outageMs: number
   glabPath: string
-  defaultProblems: Problem[]
-  targetsError: string | null
+  defaults: Defaults
+  settingsErrors: string[]
   cfg: CheckCfg
   /** Module values: lost on reload, which happens between turns. */
   isBusy: boolean
@@ -47,16 +46,16 @@ export function makeRuntime(options: PluginOptions): Runtime {
   const num = (k: string, d: number) => (typeof options[k] === 'number' ? (options[k] as number) : d)
   const glabPath = String(options.glabPath ?? 'glab') || 'glab'
   const targets = parseTargets(String(options.deployTargets ?? '{}'))
+  const { errors, ...defaults } = readDefaults(options as Record<string, unknown>)
   return {
     intervalMs: num('intervalSeconds', 60) * 1000,
     mergedMs: num('mergedIntervalSeconds', 300) * 1000,
     maxBackoffMs: num('maxBackoffSeconds', 600) * 1000,
     outageMs: num('outageWakeMinutes', 60) * 60_000,
     glabPath,
-    defaultProblems: String(options.defaultProblems ?? 'pipeline,conflict,closed')
-      .split(',').map(s => s.trim()).filter((s): s is Problem => PROBLEMS.includes(s as Problem)),
-    targetsError: 'error' in targets ? String(targets.error) : null,
-    cfg: { glabPath, targets: 'error' in targets ? {} : targets },
+    defaults,
+    settingsErrors: [...errors, ...('error' in targets ? [String(targets.error)] : [])],
+    cfg: { glabPath, targets: 'error' in targets ? {} : targets, defaults },
     isBusy: false,
     mainTurn: null,
     isSubmitting: false,
@@ -81,9 +80,9 @@ function inTurn<T>(rt: Runtime, work: () => Promise<T>): Promise<T> {
   return run
 }
 
-// A merged MR is checked less often, unless a deploy wait is armed: that one is time-sensitive.
+// A merged or closed MR is checked less often, unless a deploy wait is armed: that one is time-sensitive.
 const nextDue = (rt: Runtime, link: Link, now: number) =>
-  now + (link.snap?.state === 'merged' && !link.arms.some(a => a.kind === 'deployed') ? rt.mergedMs : rt.intervalMs)
+  now + (link.snap && link.snap.state !== 'opened' && !link.arms.some(a => a.kind === 'deployed') ? rt.mergedMs : rt.intervalMs)
 
 const without = <T>(all: Record<string, T>, key: string) => {
   const copy = { ...all }
@@ -102,7 +101,7 @@ async function apply($: EngineInterface, rt: Runtime, before: Link, out: CheckOu
     const kept = (out.link?.arms ?? []).filter(a => nowLink.arms.some(b => b.id === a.id))
     return {
       ...all,
-      [before.key]: { ...base, problems: nowLink.problems, arms: [...kept, ...added], nextCheckAt: nextDue(rt, base, now) },
+      [before.key]: { ...base, arms: [...kept, ...added], nextCheckAt: nextDue(rt, base, now) },
     }
   })
 }
@@ -310,12 +309,60 @@ export async function deliver($: EngineInterface, rt: Runtime) {
 
 export type ArmSpec = Omit<Arm, 'id' | 'armedAt'>
 
-/** Link (or re-read) an MR, optionally arm a condition, and check it now. What it finds goes in the answer, not a wake. */
+/** What a call changes about one link. 'default' goes back to the settings. */
+export type LinkChanges = {
+  delivery?: Partial<Record<EventName, DeliveryChoice | 'once' | 'default'>>
+  ignored?: Partial<Record<IgnoreKey, string[] | 'default'>>
+  unlinkWhenDone?: boolean | 'default'
+}
+
+function withChanges(link: Link, changes: LinkChanges, d: Defaults, now: number): Link {
+  let { delivery, once, ignored, unlinkWhenDone, problems, noteSince, snap } = link
+  const before = (e: EventName) => (link.once?.[e] ? 'once' : choiceFor(link, e, d))
+  for (const [name, choice] of Object.entries(changes.delivery ?? {})) {
+    const e = name as EventName
+    // A choice for one of the old problems overrides what a link saved before 0.4.0 said.
+    const old = e === 'pipeline_failed' ? 'pipeline' : e
+    if (problems && !problems.includes(old) && (old === 'pipeline' || old === 'conflict' || old === 'closed')) {
+      problems = [...problems, old]
+      if (!delivery?.[e]) delivery = { ...delivery, [e]: 'quiet' }
+    }
+    const pending = { ...once }
+    delete pending[e]
+    if (choice === 'once') once = { ...pending, [e]: true }
+    else {
+      once = pending
+      const copy = { ...delivery }
+      if (choice === 'default') delete copy[e]
+      else copy[e] = choice
+      delivery = copy
+    }
+  }
+  const next: Link = { ...link, delivery, once, problems }
+  // What happened while a kind was off is not news once it is heard again.
+  const isBack = (e: EventName) => before(e) === 'off' && (next.once?.[e] ? 'once' : choiceFor(next, e, d)) !== 'off'
+  if (link.snap && isBack('comment')) noteSince = iso(now)
+  if (snap && isBack('approved')) snap = { ...snap, approvedBy: undefined }
+  if (changes.ignored) {
+    const copy: IgnoredUsers = { ...ignored }
+    for (const [key, users] of Object.entries(changes.ignored)) {
+      if (users === 'default') delete copy[key as IgnoreKey]
+      else copy[key as IgnoreKey] = users
+    }
+    ignored = Object.keys(copy).length ? copy : undefined
+  }
+  if (changes.unlinkWhenDone !== undefined) {
+    unlinkWhenDone = changes.unlinkWhenDone === 'default' ? undefined : changes.unlinkWhenDone
+  }
+  return { ...next, ignored, unlinkWhenDone, noteSince, snap }
+}
+
+/** Link (or re-read) an MR, apply changes, optionally arm a condition, and check it now. What it finds goes in the answer, not a wake. */
 async function linkAndCheckInner(
   $: EngineInterface,
   rt: Runtime,
   mrText: string,
-  problems: Problem[] | undefined,
+  changes: LinkChanges,
   arm?: ArmSpec,
   isFromPerson = false,
 ): Promise<{ error: string } | { text: string }> {
@@ -324,21 +371,18 @@ async function linkAndCheckInner(
   const now = await $.clock.now()
   const key = linkKey(ref)
   const existing = (await read($, links))[key]
-  let newArm: Arm | undefined
-  if (arm) {
-    newArm = { ...arm, id: `a${++rt.armCount}${now.toString(36).slice(-4)}`, armedAt: iso(now) }
-    if (newArm.kind === 'comment' && !newArm.since) newArm.since = newArm.armedAt
+  const makeArm = (spec: ArmSpec): Arm => {
+    const made: Arm = { ...spec, id: `a${++rt.armCount}${now.toString(36).slice(-4)}`, armedAt: iso(now) }
+    if (made.kind === 'comment' && !made.since) made.since = made.armedAt
+    return made
   }
   const link: Link = existing ?? {
-    key, ...ref, problems: problems ?? rt.defaultProblems, arms: [], snap: null,
+    key, ...ref, arms: [], snap: null,
     fired: {}, noteSince: null, nextCheckAt: now + rt.intervalMs, linkedAt: iso(now),
     reportedDeploys: (await read($, reported))[key],
   }
-  const withArm: Link = {
-    ...link,
-    problems: problems ?? link.problems,
-    arms: newArm ? [...link.arms, newArm] : link.arms,
-  }
+  const changed = withChanges(link, changes, rt.defaults, now)
+  const withArm: Link = { ...changed, arms: arm ? [...changed.arms, makeArm(arm)] : changed.arms }
   await update($, links, all => ({ ...all, [key]: withArm }))
   const out = await checkLink($, withArm, rt.cfg)
   if (!out.ok) {
@@ -346,23 +390,23 @@ async function linkAndCheckInner(
     const undo = () => update($, links, all => (!all[key] ? all : existing ? { ...all, [key]: existing } : without(all, key)))
     if (out.kind === 'forbidden') {
       await undo()
-      return { error: `glab's user on ${ref.host} is not allowed to read what ${shortName(ref)} needs (403); nothing was ${arm ? 'armed' : 'linked'}.` }
+      return { error: `glab's user on ${ref.host} is not allowed to read what ${shortName(ref)} needs (403); nothing was ${arm ? 'armed' : existing ? 'changed' : 'linked'}.` }
     }
     if (needsPerson(out.kind)) {
       await undo()
-      return { error: `Could not reach ${ref.host} for ${shortName(ref)}; nothing was ${arm ? 'armed' : 'linked'}. ${setupHelp(out.kind, ref.host)}` }
+      return { error: `Could not reach ${ref.host} for ${shortName(ref)}; nothing was ${arm ? 'armed' : existing ? 'changed' : 'linked'}. ${setupHelp(out.kind, ref.host)}` }
     }
     if (out.gone) {
       await undo()
       // A private project answers 404, not 401, to a request with no login: check the login first.
       const me = await selfName($, ref.host, rt.glabPath)
       if (!me.ok && needsPerson(me.kind)) {
-        return { error: `Could not read ${shortName(ref)}; nothing was ${arm ? 'armed' : 'linked'}. ${setupHelp(me.kind, ref.host)}` }
+        return { error: `Could not read ${shortName(ref)}; nothing was ${arm ? 'armed' : existing ? 'changed' : 'linked'}. ${setupHelp(me.kind, ref.host)}` }
       }
       return { error: `${shortName(ref)} was not found on ${ref.host}, or glab's user (${me.ok ? me.data : 'unknown'}) has no access to it.` }
     }
     if (!(await read($, links))[key]) return { text: `${shortName(ref)}: unlinked while it was being checked.` }
-    return { text: `${shortName(ref)} linked, but GitLab could not be read (${out.kind}: ${out.detail}). It will be retried.\n${linkDetail(withArm)}` }
+    return { text: `${shortName(ref)} linked, but GitLab could not be read (${out.kind}: ${out.detail}). It will be retried.\n${linkDetail(withArm, rt.defaults)}` }
   }
   await hostOk($, ref.host, now)
   // Unlinked while the check ran: nothing it found is wanted.
@@ -375,7 +419,7 @@ async function linkAndCheckInner(
   const found = [...out.wake.map(w => `met now: ${w}`), ...out.broken, ...out.quiet]
   return {
     text: [
-      after ? linkDetail(after) : `${shortName(ref)}: no longer linked`,
+      after ? linkDetail(after, rt.defaults) : `${shortName(ref)}: no longer linked`,
       ...(found.length ? ['', ...found] : []),
     ].join('\n'),
   }
@@ -401,7 +445,8 @@ async function unarmInner($: EngineInterface, rt: Runtime, mrText: string, armId
     const cur = all[key]
     if (!cur) return all
     const arms = cur.arms.filter(a => !removed.some(r => r.id === a.id))
-    if (arms.length === 0 && cur.snap && cur.snap.state !== 'opened') return without(all, key)
+    const isDone = !!cur.snap && cur.snap.state !== 'opened' && arms.length === 0 && pendingOnce(cur, cur.snap.state).length === 0
+    if (isDone && unlinksWhenDone(cur, rt.defaults)) return without(all, key)
     return { ...all, [key]: { ...cur, arms } }
   })
   return removed.length
@@ -413,20 +458,23 @@ export async function listText($: EngineInterface, rt: Runtime): Promise<string>
   const all = Object.values(await read($, links))
   const hs = await read($, health)
   const now = await $.clock.now()
-  const lines = all.map(linkDetail)
+  const lines = all.map(l => linkDetail(l, rt.defaults))
   for (const [host, h] of Object.entries(hs)) lines.push(outageLine(host, h, now))
-  if (rt.targetsError) lines.push(`Settings problem: ${rt.targetsError}`)
+  for (const problem of rt.settingsErrors) lines.push(`Settings problem: ${problem}`)
   const diag = await diagLine($, rt.sessionKey)
   return [lines.length ? lines.join('\n') : 'No MRs are linked to this session.', diag].join('\n')
 }
 
 /** The actions behind the tools: each saves the session's values when done. */
 export async function linkAndCheck(
-  $: EngineInterface, rt: Runtime, mrText: string, problems: Problem[] | undefined, arm?: ArmSpec, isFromPerson = false,
+  $: EngineInterface, rt: Runtime, mrText: string, changes: LinkChanges = {}, arm?: ArmSpec, isFromPerson = false,
 ): Promise<{ error: string } | { text: string }> {
   return inTurn(rt, async () => {
-    const r = await linkAndCheckInner($, rt, mrText, problems, arm, isFromPerson)
+    const r = await linkAndCheckInner($, rt, mrText, changes, arm, isFromPerson)
     await save($, rt.sessionKey)
+    if ('text' in r && rt.settingsErrors.length) {
+      return { text: [r.text, ...rt.settingsErrors.map(p => `Settings problem: ${p}`)].join('\n') }
+    }
     return r
   })
 }

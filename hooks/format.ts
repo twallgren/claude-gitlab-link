@@ -1,6 +1,7 @@
 // The text the session and the person read.
 import type { HostHealth, Link } from '../types'
 import { clip, describeArm } from './check'
+import { describeDelivery, type Defaults } from './delivery'
 import { setupHint, type FailKind } from './glab'
 import { shortName } from './mr-ref'
 
@@ -22,11 +23,11 @@ export function linkStatus(link: Link): string {
   return `${shortName(link)} · ${parts.join(' · ')}`
 }
 
-export function linkDetail(link: Link): string {
+export function linkDetail(link: Link, defaults: Defaults): string {
   const lines = [linkStatus(link)]
   if (link.snap) lines.push(`  ${link.snap.title} ${link.snap.webUrl}`)
-  lines.push(`  default wakes: ${link.problems.length ? link.problems.join(', ') : 'none'}`)
-  for (const a of link.arms) lines.push(`  armed ${a.id}: ${describeArm(a)} (since ${a.armedAt})`)
+  lines.push(...describeDelivery(link, defaults).map(l => `  ${l}`))
+  for (const a of link.arms) lines.push(`  one-time wait ${a.id}: ${describeArm(a)} (since ${a.armedAt})`)
   return lines.join('\n')
 }
 
@@ -48,11 +49,10 @@ export function wakeRow(text: string, listEvents: boolean): string | null {
   if (at < 0) return null
   const head = all[at]!
   if (!listEvents || !/ \(and \d+ more\)\.$/.test(head)) return head
+  // The events are the first run of list lines; what follows is not what woke it.
+  const start = all.findIndex((l, i) => i > at && l.startsWith('- '))
   const events: string[] = []
-  for (const l of all.slice(at + 1)) {
-    if (l.startsWith('Still armed:') || l === 'Nothing else is armed.') break
-    if (l.startsWith('- ')) events.push(l)
-  }
+  for (let i = start; i > at && all[i]?.startsWith('- '); i++) events.push(all[i]!)
   return [head, ...events].join('\n')
 }
 
@@ -72,11 +72,11 @@ export function wakeText(lines: string[], links: Link[], also: string[] = []): s
     `Automatic GitLab update, not typed by you: ${clip(first, 120)}${more}.`,
     '',
     '<gitlab-mr-event>',
-    'From the gitlab-link mod: a condition you armed fired, or a linked MR hit a blocking problem.',
+    'From the gitlab-link mod: a one-time wait fired, or something happened that is set to wake you.',
     ...(hasComment([...lines, ...shown]) ? [QUOTE_NOTE] : []),
     ...lines.map(l => `- ${defang(l)}`),
-    still.length ? `Still armed: ${still.join('; ')}` : 'Nothing else is armed.',
-    ...(shown.length ? ['Other changes since your last turn that nothing was armed for:', ...shown.map(l => `- ${defang(l)}`)] : []),
+    still.length ? `Still waiting once: ${still.join('; ')}` : 'No one-time waits remain.',
+    ...(shown.length ? ['Other changes since your last turn, none of which would have woken you:', ...shown.map(l => `- ${defang(l)}`)] : []),
     ...(also.length > shown.length ? [`(${also.length - shown.length} earlier lines left out)`] : []),
     '</gitlab-mr-event>',
   ].join('\n')
@@ -87,7 +87,7 @@ export function quietText(lines: string[]): string {
   const cut = lines.length - shown.length
   return [
     '<gitlab-mr-updates>',
-    'Changes on linked MRs since your last turn that nothing was armed for (from the gitlab-link mod):',
+    'Changes on linked MRs since your last turn that did not wake you (from the gitlab-link mod):',
     ...(hasComment(shown) ? [QUOTE_NOTE] : []),
     ...shown.map(l => `- ${defang(l)}`),
     ...(cut > 0 ? [`(${cut} earlier lines left out)`] : []),

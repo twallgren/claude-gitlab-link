@@ -1,5 +1,19 @@
-/** A problem that wakes the session for every linked MR unless turned off. */
-export type Problem = 'pipeline' | 'conflict' | 'closed'
+/** A kind of change whose delivery can be chosen. */
+export type EventName =
+  | 'comment'
+  | 'approved'
+  | 'merged'
+  | 'closed'
+  | 'reopened'
+  | 'conflict'
+  | 'pipeline_failed'
+  | 'pipeline_succeeded'
+
+/** always: wake each time. quiet: add to the next message. off: say nothing. */
+export type DeliveryChoice = 'always' | 'quiet' | 'off'
+
+export type IgnoreKey = 'all' | 'comment' | 'approved' | 'merged' | 'closed' | 'reopened'
+export type IgnoredUsers = Partial<Record<IgnoreKey, string[]>>
 
 /** A condition a session arms; each fires once, then disarms. */
 export type ArmKind =
@@ -8,6 +22,8 @@ export type ArmKind =
   | 'comment'
   | 'approved'
   | 'merged'
+  | 'closed'
+  | 'reopened'
   | 'conflict'
   | 'deployed'
 
@@ -15,8 +31,8 @@ export type Arm = {
   id: string
   kind: ArmKind
   armedAt: string
-  /** pipeline: fire on any final status, or on failed only. */
-  status?: 'any' | 'failed'
+  /** pipeline: fire on any final status, or on failed or success only. */
+  status?: 'any' | 'failed' | 'success'
   /** job: the job id. */
   jobId?: number
   /** comment: only this author's comments. */
@@ -44,6 +60,8 @@ export type Snapshot = {
   /** Linked while GitLab was still working out mergeability: hasConflicts is not known yet. */
   isConflictUnknown?: boolean
   deployCommit: string | null
+  /** Who has approved; absent until the approvals have been read. */
+  approvedBy?: string[]
 }
 
 export type Link = {
@@ -51,7 +69,26 @@ export type Link = {
   host: string
   project: string
   iid: number
-  problems: Problem[]
+  /** Only on links saved before 0.4.0: the default problem wakes then on. */
+  problems?: string[]
+  /** This link's own choices over the defaults. */
+  delivery?: Partial<Record<EventName, DeliveryChoice>>
+  /** Events whose next change wakes once, whatever the choice under it. */
+  once?: Partial<Record<EventName, true>>
+  /** Reads that failed and are to be tried again. */
+  owes?: {
+    /** No list of approvers was read when one was due: the next is told quietly. */
+    approvals?: boolean
+    /** A reopening whose author is still to be read: the tries so far. */
+    reopen?: number
+    /** A wait reported that reopening: the retry must not repeat it. */
+    isReopenTold?: boolean
+  }
+  /** Checks for which a finished MR has stayed linked to retry a failed read. */
+  held?: number
+  /** This link's own ignored users; a key here replaces the default's list. */
+  ignored?: IgnoredUsers
+  unlinkWhenDone?: boolean
   arms: Arm[]
   snap: Snapshot | null
   /** Problems already reported, so each fires once per change. */

@@ -2,13 +2,13 @@
 
 # gitlab-link
 
-A Claude Code mod that links GitLab merge requests to a session, on gitlab.com or any self-hosted GitLab, and wakes the session only when something it is waiting for happens. The session never has to poll.
+A Claude Code mod that links GitLab merge requests to a session, on gitlab.com or any self-hosted GitLab, and wakes the session for the changes you choose. The session never has to poll.
 
 ## Why
 
 Claude Code's built-in pull-request integration is GitHub-only, and the GitLab plugin in Anthropic's directory is a set of tools the model calls when it wants data: nothing tells a session that a pipeline failed or a reviewer commented. Without that, a session waiting on an MR either polls GitLab, spending a model turn on every check, or never hears about the change.
 
-gitlab-link checks GitLab itself, inside Claude Code, without spending model tokens. When a condition the session armed is met, or a linked MR hits a blocking problem, the mod starts one turn in the session, with every event from that check batched together. Changes nobody asked about never wake the session: they are attached quietly to its next turn (or the next wake) and shown in a band above the prompt.
+gitlab-link checks GitLab itself, inside Claude Code, without spending model tokens. For each kind of change you choose whether it wakes the session, is added quietly to the session's next message, or is dropped. Everything one check finds arrives together, and a band above the prompt shows each link where the app draws it.
 
 ## Quick start
 
@@ -19,8 +19,12 @@ gitlab-link checks GitLab itself, inside Claude Code, without spending model tok
    ```
    app!42 · opened · pipeline running · waiting: pipeline
      Add the export button https://gitlab.example.com/group/app/-/merge_requests/42
-     default wakes: pipeline, conflict, closed
-     armed a1x9k2: pipeline (since 2026-11-25T21:24:15.905Z)
+     wakes you for: comments, approvals, merged, closed without merging, reopened, merge conflict, pipeline failed
+     added to your next message: pipeline succeeded
+     off: nothing
+     ignored users (@me is glab's user): all: @me
+     once merged or closed: unlinks when no one-time wait remains, and reports nothing after that
+     one-time wait a1x9k2: pipeline (since 2026-11-25T21:24:15.905Z)
    ```
 
 4. Carry on, or leave the session idle. When the pipeline finishes, the session wakes with a turn like this. It shows in the conversation as a message from the plugin, drawn as its first line only, which is written for you. In the terminal, ctrl+o shows the rest, written for Claude. The desktop app has no way to expand it, so when one wake carries several events, it lists each of them under the first line. The full message is:
@@ -29,9 +33,9 @@ gitlab-link checks GitLab itself, inside Claude Code, without spending model tok
    Automatic GitLab update, not typed by you: app!42: pipeline #1234 failed (failed jobs: test:unit).
 
    <gitlab-mr-event>
-   From the gitlab-link mod: a condition you armed fired, or a linked MR hit a blocking problem.
+   From the gitlab-link mod: a one-time wait fired, or something happened that is set to wake you.
    - app!42: pipeline #1234 failed (failed jobs: test:unit) https://gitlab.example.com/group/app/-/pipelines/1234
-   Nothing else is armed.
+   No one-time waits remain.
    </gitlab-mr-event>
    ```
 
@@ -76,35 +80,82 @@ An MR can be named by its URL, as `group/project!123`, or as `!123` for the sess
 
 | Tool | What it does |
 | --- | --- |
-| `gitlab_link_mr` | Links an MR and returns its status. |
-| `gitlab_wait_for` | Arms one condition. It wakes the session once, then disarms. If the condition is already met, the tool says so at once and nothing stays armed. |
-| `gitlab_unarm` | Disarms one condition by id, every condition of one kind, or all. |
+| `gitlab_link_mr` | Links an MR and returns its status and how it behaves. On a linked MR, changes its delivery, ignored users or unlinking. |
+| `gitlab_wait_for` | Adds a one-time wake for one condition. It leaves your delivery choices alone. If the condition is already met, the tool says so at once. |
+| `gitlab_unarm` | Removes one wait by id, every wait of one kind, or all. |
 | `gitlab_unlink_mr` | Unlinks an MR. |
-| `gitlab_linked_mrs` | Lists the links, their armed conditions and any outage. |
+| `gitlab_linked_mrs` | Lists the links, how each behaves, their waits and any outage. |
 
-### What wakes the session
+To change something for one MR, ask Claude: *"don't wake me for comments on this one"*, *"wake me just once more for a comment"*, *"keep it linked after it merges"*.
 
-**Default problems.** These apply to every linked open MR, and each fires once per change. Turn them off per MR with `problems: false` or a list, or for every MR in the settings.
+### Delivery
 
-- The head pipeline of the latest commit failed. The wake names the failed jobs.
-- A merge conflict appeared.
-- The MR was closed without merging.
+Each kind of change has a default in the settings, used for every linked MR unless you change it for a specific one.
 
-**Armed conditions.** Each fires once, then disarms.
+| Choice | What happens |
+| --- | --- |
+| **Always wake** (`always`) | Wakes the session each time. |
+| **Quiet** (`quiet`) | Added to your next message, without waking. |
+| **Off** (`off`) | Nothing. |
+| **Wake once** (`once`) | For a specific MR only. Wakes for the next change (not one already there), then goes back to the earlier choice; if that was "always", it becomes "quiet". |
+
+Whatever the choice, a one-time wait (`gitlab_wait_for`) wakes you once when its condition is met.
+
+| Event | Default |
+| --- | --- |
+| `comment`: a new comment | always |
+| `approved`: someone approves | always |
+| `merged` | always |
+| `closed`: closed without merging | always |
+| `reopened` | always |
+| `conflict`: a merge conflict appears | always |
+| `pipeline_failed`: the head pipeline fails (the wake names the failed jobs) | always |
+| `pipeline_succeeded`: the head pipeline succeeds | quiet |
+
+A pipeline's other status changes, such as starting to run, are added quietly unless both pipeline events are off. What is already true when an MR is linked, such as a pipeline that has already failed, shows in its status but is not delivered.
+
+### Ignored users
+
+The `ignoredUsers` setting says whose changes you don't want to hear about. `@me` is the account glab uses, and the default is `{"all":["@me"]}`: your own comments and actions are left out.
+
+```json
+{
+  "all": ["@me"],
+  "comment": ["renovate-bot"],
+  "merged": ["release-bot"]
+}
+```
+
+The keys are `all`, `comment`, `approved`, `merged`, `closed` and `reopened`. A user is ignored for an event when listed under `all` or under that event. A specific MR can have its own lists; each replaces the default list under the same key. To hear when you merge but not your own comments, use `{"all":[],"comment":["@me"]}`.
+
+- An ignored change neither wakes you nor is added quietly. Pipelines and conflicts are never ignored, even when your push caused them.
+- A one-time wait for a state (`merged`, `approved`, `closed`, `reopened`) fires whoever did it. A `comment` wait skips ignored users unless it names one with `from`.
+- If GitLab doesn't say who made a change, it is delivered.
+- If you and your session share one account, GitLab can't tell you apart.
+
+### One-time waits
 
 | Condition | Fires when |
 | --- | --- |
-| `pipeline` | The head pipeline of the current commit reaches a final status. `status: failed` limits it to failures. |
+| `pipeline` | The head pipeline of the current commit reaches a final status. `status: failed` or `success` limits it to that result, and the wait ends quietly on another. |
 | `job` | Job `job_id` finishes. |
-| `comment` | Someone other than glab's user comments. `from` limits it to one person. |
+| `comment` | Someone not ignored comments. `from` limits it to one person. |
 | `approved` | The MR is approved by at least one person (and by enough people where approvals are required). |
 | `merged` | The MR is merged. |
+| `closed` | The MR is closed without merging. |
+| `reopened` | A closed MR is reopened. |
 | `conflict` | A merge conflict appears. |
-| `deployed` | A deploy containing the MR's merge (or squash) commit finishes, with success, failure or cancellation. It waits for the merge first. A success wins over an earlier failure. A failure waits while a newer deploy is running, and once reported isn't reported again: arm again to wait for the retry. |
+| `deployed` | A deploy containing the MR's merge (or squash) commit finishes, with success, failure or cancellation. It waits for the merge first. A success wins over an earlier failure. A failure waits while a newer deploy is running, and once reported isn't reported again: add the wait again for the retry. |
 
-An MR stays linked after it is merged while a `comment`, `deployed`, `pipeline`, `job` or `merged` condition is armed on it, and it is checked less often then, except while `deployed` is armed.
+A wait that can no longer fire, such as `approved` on a closed MR, is removed and reported in one wake. So is a wait GitLab refuses to answer, such as a job id that doesn't exist or deployments glab's user may not read; the host's other checks carry on.
 
-A problem already present when an MR is linked, such as a pipeline that has already failed, shows in the link's status but sends no wake. A condition that can no longer fire, such as `approved` on a closed MR, is disarmed and reported in one wake. So is a wait GitLab refuses to answer, such as a job id that doesn't exist or deployments glab's user may not read; the host's other checks carry on.
+### After a merge or close
+
+With **Unlink after merge or close** on (the default), a merged or closed MR is unlinked once no one-time wait remains, even if events are set to "always", and nothing later on it is reported. So "always" for `reopened`, or for comments after a merge, needs a wait or this setting off. With it off, the MR stays linked until you unlink it. You can change it for a specific MR before it is unlinked, or link the MR again with it off.
+
+If its comments or approvals can't be read just then, it stays linked for a few more checks, then says what it couldn't read.
+
+A merged or closed MR that stays linked is checked less often, except while `deployed` is waiting. A reopening can therefore take that long to show.
 
 ### Deploy targets
 
@@ -130,10 +181,14 @@ A problem already present when an MR is linked, such as a pipeline that has alre
 
 - Retries back off from 1 minute up to 10, and the band shows the outage.
 - Nothing is lost. Each check compares GitLab with the last state it read, so the first check after recovery catches up on everything.
-- If a condition is armed, the session gets one wake once the outage has lasted an hour.
+- If a one-time wait is pending, the session gets one wake once the outage has lasted an hour.
 - A rejected glab login or a missing glab sends you a desktop notification instead of waking the session, since only you can fix those.
-- An outage is a host that stops answering. When one MR's checks fail while the host still answers, only that MR is retried less often, it shows `checks failing`, and a session with something armed on it is woken once if that lasts an hour.
+- An outage is a host that stops answering. When one MR's checks fail while the host still answers, only that MR is retried less often, it shows `checks failing`, and a session with a one-time wait on it is woken once if that lasts an hour.
 - An MR that returns 404 is unlinked, once a second request confirms glab's login still works. One that returns 403 stays linked and the session is told once.
+
+## Upgrading from 0.3
+
+The `defaultProblems` setting is gone: set the delivery of `pipeline_failed`, `conflict` and `closed` instead. Comments, approvals, merges and reopening now wake the session by default, and your own are ignored. An MR linked earlier keeps any problem wake you had turned off for it as quiet.
 
 ## Settings
 
@@ -142,10 +197,13 @@ Set these in `/config`, or under `pluginConfigs["gitlab-link"].options` in `~/.c
 | Setting | Default | What it sets |
 | --- | --- | --- |
 | `intervalSeconds` | 60 | Seconds between checks of a linked open MR. |
-| `mergedIntervalSeconds` | 300 | Seconds between checks of a merged MR that still has something armed, other than `deployed`. |
+| `mergedIntervalSeconds` | 300 | Seconds between checks of a merged or closed MR that is still linked and has no `deployed` wait. |
 | `maxBackoffSeconds` | 600 | The longest wait between retries while GitLab is unreachable. |
-| `outageWakeMinutes` | 60 | How long an outage lasts before the one wake (only while something is armed). |
-| `defaultProblems` | `pipeline,conflict,closed` | The default problem wakes; empty for none. |
+| `outageWakeMinutes` | 60 | How long an outage lasts before the one wake (only while a one-time wait is pending). |
+| `deliveryComment`, `deliveryApproved`, `deliveryMerged`, `deliveryClosed`, `deliveryReopened`, `deliveryConflict`, `deliveryPipelineFailed` | `always` | Default [delivery](#delivery) of each event: `always`, `quiet` or `off`. |
+| `deliveryPipelineSucceeded` | `quiet` | The same, for a successful pipeline. |
+| `ignoredUsers` | `{"all":["@me"]}` | Whose changes to [ignore](#ignored-users). |
+| `unlinkWhenDone` | `true` | [Unlink after merge or close](#after-a-merge-or-close). |
 | `deployTargets` | `{}` | Named deploy targets per project, as JSON (see above). |
 | `glabPath` | `glab` | The glab executable. Left as `glab`, `/opt/homebrew/bin` and `/usr/local/bin` are tried too. |
 
@@ -161,9 +219,10 @@ If glab is missing or not logged in, linking and arming are refused with the ste
 ## Privacy and cost
 
 - The mod talks only to your GitLab hosts, through glab, with glab's own login. It holds no token and sends nothing anywhere else.
-- Checking costs no model tokens. Each wake is one model turn, billed like any other.
-- Comment text from an MR goes into the session's context when a comment wait fires, or quietly on the next turn. It is kept to one line and marked as the commenter's words, not an instruction from you. Anyone who can comment on a linked MR can put text there, so weigh that for public projects.
-- Each session's links and armed conditions are saved in Claude Code's local plugin store, so they survive a restart of the plugin or the session, and are pruned 14 days after a session last saved them.
+- Checking costs no model tokens. Each wake is one model turn, billed like any other, so a busy MR with the default settings can add up. Set noisy events to quiet.
+- Each linked open MR costs an extra request per check to read its approvals, unless approvals are off.
+- Comments wake the session by default, and their text goes into its context, in a wake or quietly on the next turn. It is kept to one line and marked as the commenter's words, not an instruction from you. Anyone who can comment on a linked MR can therefore wake your session and put text in its context. On a public project, consider setting comments to quiet or off.
+- Each session's links, their choices and their waits are saved in Claude Code's local plugin store, so they survive a restart of the plugin or the session, and are pruned 14 days after a session last saved them.
 
 ## Compatibility
 
@@ -188,7 +247,7 @@ Bug reports and pull requests are welcome at [github.com/twallgren/claude-gitlab
 ## What it can't do
 
 - It polls rather than using webhooks, because GitLab can't reach most laptops.
-- It runs only while the session's Claude Code process does. The desktop app stops idle sessions' processes when too many are open or memory is short, and while one is stopped nothing checks GitLab and nothing can wake it. Links and armed conditions are saved, so the first check after the session resumes (when you or another session send it a message) catches up on everything that happened meanwhile.
+- It runs only while the session's Claude Code process does. The desktop app stops idle sessions' processes when too many are open or memory is short, and while one is stopped nothing checks GitLab and nothing can wake it. Links and waits are saved, so the first check after the session resumes (when you or another session send it a message) catches up on everything that happened meanwhile.
 - It can't add to the desktop app's built-in pull-request features, which are GitHub-only.
 - It never approves, merges or runs jobs. The session does those with glab.
 

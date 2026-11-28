@@ -1,7 +1,7 @@
 {
   "name": "gitlab-link",
-  "version": "0.3.7",
-  "description": "Link GitLab merge requests (gitlab.com or self-hosted) to a session and wake it only on the events it waits for.",
+  "version": "0.4.0",
+  "description": "Link GitLab merge requests (gitlab.com or self-hosted) to a session and choose which changes wake it.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "intervalSeconds": {
@@ -12,8 +12,8 @@
     },
     "mergedIntervalSeconds": {
       "type": "number",
-      "title": "Check interval (merged MRs)",
-      "description": "Seconds between checks of a merged MR that still has an armed condition other than deployed.",
+      "title": "Check interval (merged or closed MRs)",
+      "description": "Seconds between checks of a merged or closed MR that is still linked and has no deployed wait.",
       "default": 300
     },
     "maxBackoffSeconds": {
@@ -28,11 +28,105 @@
       "description": "Wake the session once per outage after GitLab has been unreachable this long, only while a condition is armed.",
       "default": 60
     },
-    "defaultProblems": {
+    "deliveryComment": {
       "type": "string",
-      "title": "Default problem wakes",
-      "description": "Comma-separated problems that wake the session for every linked MR: pipeline, conflict, closed. Empty for none.",
-      "default": "pipeline,conflict,closed"
+      "title": "Default delivery: new comment",
+      "description": "always (wake), quiet (add to your next message) or off. Used for every linked MR unless you change it for a specific one. A one-time wait wakes you whatever this says.",
+      "default": "always",
+      "options": [
+        "always",
+        "quiet",
+        "off"
+      ]
+    },
+    "deliveryApproved": {
+      "type": "string",
+      "title": "Default delivery: approved",
+      "description": "always (wake), quiet (add to your next message) or off. Used for every linked MR unless you change it for a specific one. A one-time wait wakes you whatever this says.",
+      "default": "always",
+      "options": [
+        "always",
+        "quiet",
+        "off"
+      ]
+    },
+    "deliveryMerged": {
+      "type": "string",
+      "title": "Default delivery: merged",
+      "description": "always (wake), quiet (add to your next message) or off. Used for every linked MR unless you change it for a specific one. A one-time wait wakes you whatever this says.",
+      "default": "always",
+      "options": [
+        "always",
+        "quiet",
+        "off"
+      ]
+    },
+    "deliveryClosed": {
+      "type": "string",
+      "title": "Default delivery: closed without merging",
+      "description": "always (wake), quiet (add to your next message) or off. Used for every linked MR unless you change it for a specific one. A one-time wait wakes you whatever this says.",
+      "default": "always",
+      "options": [
+        "always",
+        "quiet",
+        "off"
+      ]
+    },
+    "deliveryReopened": {
+      "type": "string",
+      "title": "Default delivery: reopened",
+      "description": "always (wake), quiet (add to your next message) or off. Used for every linked MR unless you change it for a specific one. A one-time wait wakes you whatever this says.",
+      "default": "always",
+      "options": [
+        "always",
+        "quiet",
+        "off"
+      ]
+    },
+    "deliveryConflict": {
+      "type": "string",
+      "title": "Default delivery: merge conflict",
+      "description": "always (wake), quiet (add to your next message) or off. Used for every linked MR unless you change it for a specific one. A one-time wait wakes you whatever this says.",
+      "default": "always",
+      "options": [
+        "always",
+        "quiet",
+        "off"
+      ]
+    },
+    "deliveryPipelineFailed": {
+      "type": "string",
+      "title": "Default delivery: pipeline failed",
+      "description": "always (wake), quiet (add to your next message) or off. Used for every linked MR unless you change it for a specific one. A one-time wait wakes you whatever this says.",
+      "default": "always",
+      "options": [
+        "always",
+        "quiet",
+        "off"
+      ]
+    },
+    "deliveryPipelineSucceeded": {
+      "type": "string",
+      "title": "Default delivery: pipeline succeeded",
+      "description": "always (wake), quiet (add to your next message) or off. Used for every linked MR unless you change it for a specific one. A one-time wait wakes you whatever this says.",
+      "default": "quiet",
+      "options": [
+        "always",
+        "quiet",
+        "off"
+      ]
+    },
+    "ignoredUsers": {
+      "type": "string",
+      "title": "Ignored users (JSON)",
+      "description": "Whose changes to ignore: {\"all\": [...], \"comment\": [...], \"approved\": [...], \"merged\": [...], \"closed\": [...], \"reopened\": [...]}. @me is glab's user. Used unless a link has its own list.",
+      "default": "{\"all\":[\"@me\"]}"
+    },
+    "unlinkWhenDone": {
+      "type": "boolean",
+      "title": "Unlink after merge or close",
+      "description": "Unlink a merged or closed MR once no one-time wait remains. Can be changed for a specific link.",
+      "default": true
     },
     "deployTargets": {
       "type": "string",
