@@ -1001,6 +1001,11 @@ test('with unlinking off a merged MR stays linked and its comments still wake', 
   expect(t.w.wakes[1]).toContain('after the merge')
 })
 
+test('unlink_when_done given as text is understood', async ($, on) => {
+  const t = await linkedAt($, on, { unlink_when_done: 'false' })
+  expect(t.linked).toContain('stays linked until you unlink it')
+})
+
 test('the unlinking default can be turned off in the settings', { options: { unlinkWhenDone: false } }, async ($, on) => {
   const t = await linkedAt($, on)
   await t.change({ state: 'closed', closed_by: { username: 'sam' } })

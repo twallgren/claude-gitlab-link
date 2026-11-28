@@ -26,7 +26,7 @@ const WAIT_DOC =
 
 /** The link changes a call asks for, or why they are wrong. */
 function readChanges(i: {
-  delivery?: Record<string, string>; ignored_users?: Record<string, unknown>; unlink_when_done?: boolean | 'default'
+  delivery?: Record<string, string>; ignored_users?: Record<string, unknown>; unlink_when_done?: unknown
 }): LinkChanges | { error: string } {
   for (const [e, c] of Object.entries(i.delivery ?? {})) {
     if (!EVENTS.includes(e as EventName)) return { error: `Unknown event ${e}. Use ${EVENTS.join(', ')}.` }
@@ -36,7 +36,9 @@ function readChanges(i: {
     const checked = checkIgnored({ [key]: users === 'default' ? [] : users })
     if ('error' in checked) return { error: `ignored_users: ${checked.error}.` }
   }
-  const u = i.unlink_when_done
+  // The engine may pass a boolean as text, the property allowing either.
+  const given = i.unlink_when_done
+  const u = given === 'true' ? true : given === 'false' ? false : given
   if (u !== undefined && u !== true && u !== false && u !== 'default') return { error: 'unlink_when_done must be true, false or default.' }
   return { delivery: i.delivery as LinkChanges['delivery'], ignored: i.ignored_users as LinkChanges['ignored'], unlinkWhenDone: u }
 }
